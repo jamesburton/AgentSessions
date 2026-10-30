@@ -27,9 +27,9 @@ public class LaunchService(IProcessRunner runner, IClipboard clipboard)
             var code = runner.Run(a.BuildResume(s with { ProjectPath = folder }));
             return new(true, code == 0 ? null : $"{a.Name} exited with code {code}.");
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex)
         {
-            return new(false, ex.Message);
+            return new(false, $"Could not launch {a.Name}: {ex.Message}");
         }
     }
 
@@ -64,9 +64,14 @@ public class LaunchService(IProcessRunner runner, IClipboard clipboard)
             if (code != 0) note = (note is null ? "" : note + " ") + $"{target.Name} exited with code {code}.";
             return new(true, note);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex)
         {
-            return new(false, ex.Message);
+            var msg = $"Could not launch {target.Name}: {ex.Message}";
+            if (!withPrompt)
+                msg += note!.Contains("copying to the clipboard failed")
+                    ? $" The clipboard was NOT set. Opening prompt: {prompt}"
+                    : $" The prompt was already copied to the clipboard (it is still there). Opening prompt: {prompt}";
+            return new(false, msg);
         }
     }
 }

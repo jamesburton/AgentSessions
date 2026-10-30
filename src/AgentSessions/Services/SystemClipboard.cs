@@ -25,7 +25,7 @@ public sealed class SystemClipboard : IClipboard
         foreach (var (tool, args) in new (string, string[])[] { ("xclip", ["-selection", "clipboard"]), ("wl-copy", []) })
         {
             try { Pipe(tool, args, utf8); return; }
-            catch (System.ComponentModel.Win32Exception) { /* tool not installed; try next */ }
+            catch (Exception) { /* not installed / no display / failed; try next */ }
         }
         throw new InvalidOperationException("No clipboard tool available (install xclip or wl-clipboard).");
     }

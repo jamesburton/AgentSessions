@@ -18,18 +18,21 @@ public sealed class ProcessRunner : IProcessRunner
 
     internal static ProcessStartInfo BuildStartInfo(LaunchSpec spec, string pathEnv, string pathExtEnv)
     {
-        var resolved = Resolve(spec.FileName, pathEnv, pathExtEnv)
+        var found = Resolve(spec.FileName, pathEnv, pathExtEnv)
             ?? throw new InvalidOperationException($"Could not find '{spec.FileName}' on PATH.");
+        // Absolute, so a relative PATH entry (e.g. ".") can never resolve against the child's working directory.
+        var resolved = Path.GetFullPath(found);
 
         var psi = new ProcessStartInfo { UseShellExecute = false, WorkingDirectory = spec.WorkingDirectory };
         var ext = Path.GetExtension(resolved);
-        if (ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) || ext.Equals(".bat", StringComparison.OrdinalIgnoreCase))
+        if (OperatingSystem.IsWindows()
+            && (ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) || ext.Equals(".bat", StringComparison.OrdinalIgnoreCase)))
         {
-            foreach (var arg in spec.Args)
+            foreach (var arg in spec.Args.Append(resolved))
                 if (arg.IndexOfAny(['%', '^', '!', '"', '\n', '\r']) >= 0)
                     throw new InvalidOperationException(
                         $"Refusing to launch '{spec.FileName}' via a .cmd shim: an argument contains characters " +
-                        "(% ^ ! \" or a newline) that cmd.exe would interpret.");
+                        "(% ^ ! \" or a newline) that cmd.exe would interpret (arguments or the shim path).");
 
             var sb = new StringBuilder("/d /s /c \"\"").Append(resolved).Append('"');
             foreach (var arg in spec.Args)
@@ -38,7 +41,8 @@ public sealed class ProcessRunner : IProcessRunner
                 sb.Append(" \"").Append(arg).Append('\\', trailing).Append('"');
             }
             sb.Append('"');
-            psi.FileName = "cmd.exe";
+            var comspec = Environment.GetEnvironmentVariable("ComSpec");
+            psi.FileName = string.IsNullOrEmpty(comspec) ? "cmd.exe" : comspec;
             psi.Arguments = sb.ToString();
         }
         else

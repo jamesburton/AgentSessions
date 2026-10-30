@@ -171,6 +171,56 @@ public sealed class LaunchServiceTests : IDisposable
         Assert.Contains("bad arg", r.Message);
     }
 
+    public static TheoryData<Exception> Crashes => new()
+    {
+        new System.ComponentModel.Win32Exception(5, "Access is denied"),
+        new IOException("disk gone"),
+    };
+
+    [Theory]
+    [MemberData(nameof(Crashes))]
+    public void Resume_returns_refusal_when_runner_throws(Exception ex)
+    {
+        _runner.Throws = ex;
+        var r = Svc().Resume(Adapter(), Session(_tmp), () => null);
+        Assert.False(r.Launched);
+        Assert.Contains(ex.Message, r.Message);
+    }
+
+    [Theory]
+    [MemberData(nameof(Crashes))]
+    public void StartWithHandoff_returns_refusal_when_runner_throws(Exception ex)
+    {
+        _runner.Throws = ex;
+        var r = Svc().StartWithHandoff(Adapter(), _tmp, "h.md");
+        Assert.False(r.Launched);
+        Assert.Contains(ex.Message, r.Message);
+    }
+
+    [Fact]
+    public void Fallback_with_runner_refusal_includes_prompt_and_says_clipboard_was_set()
+    {
+        _runner.Throws = new InvalidOperationException("shim refused");
+        var r = Svc().StartWithHandoff(Adapter(NoPrompt), _tmp, "h.md");
+        var prompt = "Read h.md and continue the work described there.";
+        Assert.False(r.Launched);
+        Assert.Equal(prompt, Assert.Single(_clip.Copied));
+        Assert.Contains(prompt, r.Message);
+        Assert.Contains("shim refused", r.Message);
+        Assert.Contains("already copied", r.Message);
+    }
+
+    [Fact]
+    public void Fallback_with_clipboard_and_runner_failure_says_clipboard_not_set()
+    {
+        _clip.Throws = new InvalidOperationException("no clip");
+        _runner.Throws = new IOException("boom");
+        var r = Svc().StartWithHandoff(Adapter(NoPrompt), _tmp, "h.md");
+        Assert.False(r.Launched);
+        Assert.Contains("Read h.md and continue the work described there.", r.Message);
+        Assert.Contains("NOT set", r.Message);
+    }
+
     [Fact]
     public void Project_path_with_spaces_and_non_ascii_is_passed_intact()
     {
@@ -192,6 +242,8 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
 
     public ProcessRunnerStartInfoTests() => Directory.CreateDirectory(_dir);
     public void Dispose() { try { Directory.Delete(_dir, true); } catch { } }
+
+    private static string CmdExe => Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } c ? c : "cmd.exe";
 
     private void Touch(string name) => File.WriteAllText(Path.Combine(_dir, name), "");
     private static LaunchSpec Spec(string file, params string[] args) => new(file, args, Path.GetTempPath());
@@ -219,9 +271,10 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
     [Fact]
     public void Cmd_shim_runs_via_cmd_exe_with_quoted_args()
     {
+        if (!OperatingSystem.IsWindows()) return;
         Touch("codex.cmd");
         var psi = ProcessRunner.BuildStartInfo(Spec("codex", "resume", "a b", "caf\u00e9", ""), _dir, Ext);
-        Assert.Equal("cmd.exe", psi.FileName);
+        Assert.Equal(CmdExe, psi.FileName);
         Assert.Empty(psi.ArgumentList);
         var shim = Path.Combine(_dir, "codex.cmd");
         Assert.Equal($"/d /s /c \"\"{shim}\" \"resume\" \"a b\" \"caf\u00e9\" \"\"\"", psi.Arguments, ignoreCase: true);
@@ -230,6 +283,7 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
     [Fact]
     public void Cmd_shim_doubles_trailing_backslashes()
     {
+        if (!OperatingSystem.IsWindows()) return;
         Touch("codex.bat");
         var psi = ProcessRunner.BuildStartInfo(Spec("codex", "C:\\dir\\"), _dir, Ext);
         Assert.Contains("\"C:\\dir\\\\\"", psi.Arguments);
@@ -244,6 +298,7 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
     [InlineData("line1\r\nline2")]
     public void Cmd_shim_rejects_metacharacters(string arg)
     {
+        if (!OperatingSystem.IsWindows()) return;
         Touch("codex.cmd");
         Assert.Throws<InvalidOperationException>(() => ProcessRunner.BuildStartInfo(Spec("codex", arg), _dir, Ext));
     }
@@ -259,9 +314,10 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
     [Fact]
     public void Ps1_ignored_in_favour_of_cmd()
     {
+        if (!OperatingSystem.IsWindows()) return;
         Touch("t.ps1"); Touch("t.cmd");
         var psi = ProcessRunner.BuildStartInfo(Spec("t"), _dir, ".PS1;.CMD");
-        Assert.Equal("cmd.exe", psi.FileName);
+        Assert.Equal(CmdExe, psi.FileName);
     }
 
     [Fact]
@@ -270,5 +326,42 @@ public sealed class ProcessRunnerStartInfoTests : IDisposable
         Touch("tool.exe");
         var psi = ProcessRunner.BuildStartInfo(Spec("tool"), _dir, Ext);
         Assert.Equal(Path.GetTempPath(), psi.WorkingDirectory);
+    }
+
+    [Fact]
+    public void Shim_path_with_metacharacter_is_refused()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var bad = Path.Combine(_dir, "50%dir");
+        Directory.CreateDirectory(bad);
+        File.WriteAllText(Path.Combine(bad, "codex.cmd"), "");
+        Assert.Throws<InvalidOperationException>(() => ProcessRunner.BuildStartInfo(Spec("codex"), bad, Ext));
+    }
+
+    [Fact]
+    public void Relative_path_entry_resolves_to_absolute_path()
+    {
+        Touch("tool.exe");
+        var rel = Path.GetRelativePath(Environment.CurrentDirectory, _dir);
+        var psi = ProcessRunner.BuildStartInfo(Spec("tool"), rel, Ext);
+        Assert.True(Path.IsPathRooted(psi.FileName));
+        Assert.Equal(Path.Combine(_dir, "tool.exe"), psi.FileName, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Non_windows_never_routes_cmd_through_cmd_exe()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        Touch("t.cmd");
+        var psi = ProcessRunner.BuildStartInfo(Spec("t", "a%b"), _dir, ".CMD");
+        Assert.Equal(Path.Combine(_dir, "t.CMD"), psi.FileName, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Run_returns_child_exit_code()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var code = new ProcessRunner().Run(new LaunchSpec("cmd.exe", ["/c", "exit 3"], Path.GetTempPath()));
+        Assert.Equal(3, code);
     }
 }
