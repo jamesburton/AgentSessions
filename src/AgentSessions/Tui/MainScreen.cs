@@ -245,16 +245,23 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
     private void EditLabel()
     {
         if (_model.Current is not { } cur) { _status.Add("Nothing to label."); return; }
-        var typed = ReadLine("Label (empty to clear):", cur.Label ?? "");
-        if (typed is null) { _status.Add("[yellow]No label was read; the label is unchanged.[/]"); return; }
+        // The stored value is re-read: the row may be stale (e.g. a CLI rename while this screen is open).
+        services.Labels.Load().TryGetValue(LabelStore.KeyOf(cur.Info.Agent, cur.Info.Id), out var current);
+        var typed = ReadLine("Label (empty to clear):", current ?? "");
+        if (typed is null) { _status.Add("Cancelled; the label is unchanged."); return; }
 
         var label = LabelStore.Sanitize(typed, out var truncated);
-        try { services.Labels.Set(cur.Info.Agent, cur.Info.Id, label); }
+        if (label == current) { _status.Add("Label unchanged."); return; }
+
+        LabelWrite write;
+        try { write = services.Labels.Set(cur.Info.Agent, cur.Info.Id, label); }
         catch (Exception ex)
         {
             _status.Add($"[red]Could not save the label: {Esc(ex.Message)}[/]");
             return;
         }
+        if (write.BackupPath is not null)
+            _status.Add($"[yellow]Existing labels file was unreadable; a copy was kept as {Esc(write.BackupPath)}[/]");
         _status.Add(label is null ? "Label cleared." : $"Label set: {Esc(label)}");
         if (truncated) _status.Add($"[yellow]The label was truncated to {LabelStore.MaxLength} characters.[/]");
         Reload();
@@ -262,23 +269,24 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
 
     /// <summary>
     /// A one-line editor whose text starts as <paramref name="initial"/> (Spectre's TextPrompt cannot prefill).
-    /// Enter accepts, Esc cancels (returns the initial text unchanged), Backspace deletes. Null when keys cannot be read.
+    /// Enter (the Enter KEY only) accepts, Esc cancels, Backspace deletes; control and format characters are ignored
+    /// and input stops at <see cref="LabelStore.MaxLength"/>. Null means cancelled (Esc, or no key could be read).
     /// Typed-ahead keys are dropped first so only keys pressed after the prompt appears are used.
     /// </summary>
     private string? ReadLine(string prompt, string initial)
     {
         try { keys.DiscardPending(); } catch (Exception) { return null; }
-        var text = new System.Text.StringBuilder(StripControls(initial));
+        var text = new System.Text.StringBuilder(LabelStore.Sanitize(initial) ?? "");
         console.Markup(Esc(prompt) + " ");
         console.Write(new Text(text.ToString()));
         while (true)
         {
             ConsoleKeyInfo? k;
             try { k = console.Input.ReadKey(intercept: true); }
-            catch (Exception) { return null; }
-            if (k is not { } key) return null;
-            if (key.Key == ConsoleKey.Enter || key.KeyChar is '\r' or '\n') { console.WriteLine(); return text.ToString(); }
-            if (key.Key == ConsoleKey.Escape) { console.WriteLine(); return initial; }
+            catch (Exception) { console.WriteLine(); return null; }
+            if (k is not { } key) { console.WriteLine(); return null; }
+            if (key.Key == ConsoleKey.Enter) { console.WriteLine(); return text.ToString(); }
+            if (key.Key == ConsoleKey.Escape) { console.WriteLine(); return null; }
             if (key.Key == ConsoleKey.Backspace)
             {
                 if (text.Length == 0) continue;
@@ -286,7 +294,8 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
                 text.Length -= drop;
                 console.Write(new Text("\b \b"));
             }
-            else if (!char.IsControl(key.KeyChar))
+            else if (text.Length < LabelStore.MaxLength && !char.IsControl(key.KeyChar)
+                && char.GetUnicodeCategory(key.KeyChar) != System.Globalization.UnicodeCategory.Format)
             {
                 text.Append(key.KeyChar);
                 console.Write(new Text(key.KeyChar.ToString()));

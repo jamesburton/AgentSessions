@@ -103,6 +103,22 @@ public class SessionCatalogTests
         public IReadOnlyDictionary<string, string> Load() { Loads++; return d; }
     }
 
+    private sealed class ThrowingLabels : ILabelSource
+    {
+        public IReadOnlyDictionary<string, string> Load() => throw new InvalidOperationException("boom");
+    }
+
+    [Fact]
+    public void A_throwing_label_source_does_not_break_the_list()
+    {
+        var a = new SessionInfo("claude", "id1", "C:/p", "Original", Now, 1, "/s/1");
+        var c = new SessionCatalog([new FakeAdapter("claude", AdapterCapabilities.List, [a])], new AppSettings(), () => Now, new ThrowingLabels());
+
+        var (sessions, _) = c.List();
+
+        Assert.Equal("Original", Assert.Single(sessions).DisplayTitle);
+    }
+
     [Fact]
     public void Catalog_applies_label_and_keeps_original_title()
     {

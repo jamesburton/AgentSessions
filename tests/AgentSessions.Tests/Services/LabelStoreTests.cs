@@ -94,6 +94,101 @@ public class LabelStoreTests : IDisposable
     }
 
     [Fact]
+    public void Write_is_atomic_the_old_file_is_intact_until_the_replace()
+    {
+        var store = new LabelStore(LabelsPath);
+        store.Set("claude", "a", "keep me");
+        var before = File.ReadAllBytes(LabelsPath);
+        var seen = false;
+
+        // The hook runs after the new content is fully written to the temp file and before the replace.
+        var hooked = new LabelStore(LabelsPath)
+        {
+            BeforeReplace = temp =>
+            {
+                seen = true;
+                Assert.Equal(before, File.ReadAllBytes(LabelsPath));              // target untouched so far
+                Assert.Contains("second", File.ReadAllText(temp));                // temp holds the complete new content
+                throw new IOException("simulated crash before replace");
+            }
+        };
+
+        Assert.Throws<IOException>(() => hooked.Set("claude", "b", "second"));
+
+        Assert.True(seen);   // a plain in-place WriteAllText has no such point, so this fails against it
+        Assert.Equal(before, File.ReadAllBytes(LabelsPath));
+        Assert.Equal([LabelsPath], Directory.GetFiles(_dir));   // temp cleaned up
+    }
+
+    [WindowsFact]
+    public void An_unreadable_existing_file_aborts_Set_and_is_not_treated_as_corrupt()
+    {
+        var store = new LabelStore(LabelsPath);
+        store.Set("claude", "a", "keep me");
+        var before = File.ReadAllBytes(LabelsPath);
+
+        using (new FileStream(LabelsPath, FileMode.Open, FileAccess.Write, FileShare.None))   // read gets an IO error
+        {
+            Assert.ThrowsAny<IOException>(() => store.Set("claude", "b", "x"));
+            Assert.Empty(store.Load());   // Load never throws
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(LabelsPath));
+        Assert.Equal([LabelsPath], Directory.GetFiles(_dir));   // no corrupt copy, no temp
+    }
+
+    [Fact]
+    public void Set_reports_the_corrupt_backup_it_made()
+    {
+        File.WriteAllText(LabelsPath, "[1,2]");   // valid JSON, wrong shape
+        var result = new LabelStore(LabelsPath).Set("claude", "a", "x");
+
+        Assert.True(result.Changed);
+        Assert.NotNull(result.BackupPath);
+        Assert.Equal("[1,2]", File.ReadAllText(result.BackupPath));
+        Assert.Null(new LabelStore(LabelsPath).Set("claude", "a", "y").BackupPath);
+    }
+
+    [Fact]
+    public void Set_that_changes_nothing_does_not_write()
+    {
+        var store = new LabelStore(LabelsPath);
+        Assert.False(store.Set("claude", "a", null).Changed);       // nothing to remove, no file yet
+        Assert.False(File.Exists(LabelsPath));
+
+        store.Set("claude", "a", "same");
+        var old = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(LabelsPath, old);
+        Assert.False(store.Set("claude", "a", " same ").Changed);   // same after sanitising
+        Assert.False(store.Set("claude", "zzz", "").Changed);
+        Assert.Equal(old, File.GetLastWriteTimeUtc(LabelsPath));    // never rewritten
+    }
+
+    [Fact]
+    public void Load_sanitises_hand_edited_values_and_drops_blank_ones()
+    {
+        File.WriteAllText(LabelsPath, "{\"claude:a\":\"x\\u001b[31my\\n\",\"claude:b\":\"\",\"claude:c\":\" \\t \","
+            + "\"claude:d\":\"" + new string('q', 300) + "\"}");
+
+        var loaded = new LabelStore(LabelsPath).Load();
+
+        Assert.Equal("x[31my", loaded["claude:a"]);
+        Assert.False(loaded.ContainsKey("claude:b"));
+        Assert.False(loaded.ContainsKey("claude:c"));
+        Assert.Equal(120, loaded["claude:d"].Length);
+    }
+
+    [Fact]
+    public void Sanitize_strips_controls_before_collapsing_and_removes_format_and_lone_surrogates()
+    {
+        Assert.Equal("a b", LabelStore.Sanitize("a\r\u0001\nb"));
+        Assert.Equal("ab", LabelStore.Sanitize("a‮​‏⁦⁩b"));   // bidi / zero-width (category Cf)
+        Assert.Equal("ab", LabelStore.Sanitize("a\uD800b\uDC00"));                     // lone surrogates
+        Assert.Equal("a\U0001F600b", LabelStore.Sanitize("a\U0001F600b"));             // a valid pair is kept
+        Assert.Null(LabelStore.Sanitize("​‮"));
+    }
+
+    [Fact]
     public void Missing_or_unreadable_path_loads_empty()
     {
         Assert.Empty(new LabelStore(Path.Combine(_dir, "nope", "labels.json")).Load());

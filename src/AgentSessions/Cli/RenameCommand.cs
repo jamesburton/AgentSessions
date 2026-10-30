@@ -33,15 +33,18 @@ public sealed class RenameCommand(AppServices services, IAnsiConsole console) : 
         if (!s.Clear && s.Label.Length > 0)
             label = LabelStore.Sanitize(string.Join(' ', s.Label), out truncated);
 
+        LabelWrite write;
         try
         {
-            services.Labels.Set(session.Agent, session.Id, label);
+            write = services.Labels.Set(session.Agent, session.Id, label);
         }
         catch (Exception ex)
         {
             console.MarkupLine($"[red]Could not save the label: {Esc(ex.Message)}[/]");
             return Error;
         }
+        if (write.BackupPath is not null)
+            console.MarkupLine($"[yellow]Existing labels file was unreadable; a copy was kept as {Esc(write.BackupPath)}[/]");
 
         var name = $"{Esc(session.Agent)}:{Esc(session.Id)}";
         if (label is null)
@@ -49,7 +52,7 @@ public sealed class RenameCommand(AppServices services, IAnsiConsole console) : 
             var blank = !s.Clear && s.Label.Length > 0;
             console.MarkupLine(blank
                 ? $"Label cleared for {name} (the given label was blank after removing control characters)."
-                : $"Label cleared for {name}.");
+                : write.Changed ? $"Label cleared for {name}." : $"{name} has no label; nothing to clear.");
             return Ok;
         }
         console.MarkupLine($"Label for {name}: {Esc(label)}");

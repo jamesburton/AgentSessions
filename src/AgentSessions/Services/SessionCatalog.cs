@@ -23,7 +23,9 @@ public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings s
         var activeWithin = TimeSpan.FromMinutes(settings.RecentActiveMinutes);
         var sessions = new List<ListedSession>();
         var skipped = new List<SkippedSession>();
-        var labelMap = labels?.Load() ?? new Dictionary<string, string>();   // once per List()
+        IReadOnlyDictionary<string, string> labelMap = new Dictionary<string, string>();
+        try { labelMap = labels?.Load() ?? labelMap; }   // once per List(); a failing source just means no labels
+        catch (Exception) { }
 
         foreach (var adapter in _adapters)
         {

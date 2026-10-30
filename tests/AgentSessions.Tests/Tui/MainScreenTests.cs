@@ -16,6 +16,7 @@ public class MainScreenTests : IDisposable
     private readonly FakeRunner _runner = new();
     private ScriptedKeys _keys = null!;
     private Func<IEnumerable<CleanupPlanItem>, CleanupResult>? _apply;
+    private Action<int>? _onKeyRead;   // called with the index of the key about to be read
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
 
@@ -94,7 +95,7 @@ public class MainScreenTests : IDisposable
 
     private int RunScreen(AppServices svc, TestConsole console, params Ks[] keys)
     {
-        _keys = new ScriptedKeys(keys, () => LastFrame(console));
+        _keys = new ScriptedKeys(keys, () => { _onKeyRead?.Invoke(_keys!.Frames.Count); return LastFrame(console); });
         return new MainScreen(console, svc, _keys) { ApplyOverride = _apply }.Run();
     }
 
@@ -556,6 +557,132 @@ public class MainScreenTests : IDisposable
 
         Assert.Empty(svc.Labels.Load());
         Assert.Contains("Original title", _keys.Frames[2]);
+    }
+
+    private string DataLabels => Path.Combine(_root, "data", "labels.json");
+
+    [Fact]
+    public void Esc_at_the_label_prompt_with_no_label_writes_nothing()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.False(File.Exists(DataLabels));
+        Assert.False(Directory.Exists(Path.Combine(_root, "data")));
+        Assert.Contains("Cancelled", _keys.Frames[1]);
+        Assert.DoesNotContain("Label cleared", _keys.Frames[1]);
+    }
+
+    [Fact]
+    public void Esc_leaves_the_stored_label_alone_even_if_another_writer_changed_it()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        svc.Labels.Set("claude", "c1", "Old");
+        _onKeyRead = n => { if (n == 1) svc.Labels.Set("claude", "c1", "Newer (from the CLI)"); };   // behind the TUI's back
+        console.Input.PushText("zzz");
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        RunScreen(svc, console, C('x'), C('n'), P, C('q'));
+
+        Assert.Equal("Newer (from the CLI)", svc.Labels.Load()["claude:c1"]);
+        Assert.Contains("Cancelled", _keys.Frames[2]);
+    }
+
+    [Fact]
+    public void End_of_input_at_the_label_prompt_cancels()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        // no input queued: the prompt cannot read a key
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.False(File.Exists(DataLabels));
+        Assert.Contains("Cancelled", _keys.Frames[1]);
+    }
+
+    [Fact]
+    public void Enter_on_unchanged_label_text_writes_nothing_and_says_unchanged()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        svc.Labels.Set("claude", "c1", "Same");
+        var old = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(DataLabels, old);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Equal(old, File.GetLastWriteTimeUtc(DataLabels));
+        Assert.Contains("unchanged", _keys.Frames[1]);
+    }
+
+    [Fact]
+    public void Backspace_edits_the_prefilled_label_and_enter_stores_it()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        svc.Labels.Set("claude", "c1", "Draft one");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushText("two");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Equal("Draft two", svc.Labels.Load()["claude:c1"]);
+    }
+
+    [Fact]
+    public void Label_prompt_enforces_the_maximum_length_while_typing()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        console.Input.PushText(new string('a', 150));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Equal(new string('a', 120), svc.Labels.Load()["claude:c1"]);
+        Assert.DoesNotContain(new string('a', 121), _keys.Frames[1]);   // the extra input was not echoed
+    }
+
+    [Fact]
+    public void A_newline_char_in_pasted_input_does_not_end_the_prompt_or_leak_to_hotkeys()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        console.Input.PushText("ab");
+        console.Input.PushKey(new ConsoleKeyInfo('\n', ConsoleKey.NoName, false, false, false));   // from a paste, not the Enter key
+        console.Input.PushKey(new ConsoleKeyInfo('​', ConsoleKey.NoName, false, false, false));   // zero-width: ignored
+        console.Input.PushText("qd");   // 'q' would quit and 'd' would start a delete if they leaked
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        var code = RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Equal(0, code);
+        Assert.Equal("abqd", svc.Labels.Load()["claude:c1"]);
+        Assert.True(File.Exists(a.StorePath));
+    }
+
+    [Fact]
+    public void Label_prompt_says_when_it_kept_a_copy_of_an_unreadable_labels_file()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        Directory.CreateDirectory(Path.Combine(_root, "data"));
+        File.WriteAllText(DataLabels, "{ broken");
+        console.Input.PushTextWithEnter("Fresh");
+
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Contains("Existing labels file was unreadable; a copy was kept as", _keys.Frames[1]);
+        Assert.Equal("Fresh", svc.Labels.Load()["claude:c1"]);
     }
 
     [Fact]

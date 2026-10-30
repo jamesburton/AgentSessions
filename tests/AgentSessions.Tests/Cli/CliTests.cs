@@ -627,6 +627,34 @@ public class CliTests : IDisposable
     }
 
     [Fact]
+    public void rename_clear_on_an_unlabelled_session_creates_no_file()
+    {
+        var s = Session("claude", "c1", "A", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Assert.Equal(0, Program.Run(["rename", "claude", "c1", "--clear"], console, svc));
+        Assert.Equal(0, Program.Run(["rename", "claude", "c1"], console, svc));
+
+        Assert.False(File.Exists(Path.Combine(_root, "data", "labels.json")));
+        Assert.False(Directory.Exists(Path.Combine(_root, "data")));
+    }
+
+    [Fact]
+    public void rename_says_when_it_kept_a_copy_of_an_unreadable_labels_file()
+    {
+        var s = Session("claude", "c1", "A", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+        Directory.CreateDirectory(Path.Combine(_root, "data"));
+        File.WriteAllText(Path.Combine(_root, "data", "labels.json"), "{ broken");
+
+        Assert.Equal(0, Program.Run(["rename", "claude", "c1", "New"], console, svc));
+
+        Assert.Contains("Existing labels file was unreadable; a copy was kept as", console.Output);
+        Assert.Contains("labels.corrupt-", console.Output);
+        Assert.Equal("New", svc.Labels.Load()["claude:c1"]);
+    }
+
+    [Fact]
     public void no_arguments_prints_help()
     {
         var (svc, console) = Make([]);
