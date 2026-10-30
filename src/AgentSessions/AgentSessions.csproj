@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>agentsessions</ToolCommandName>
+    <PackageId>AgentSessions</PackageId>
+    <Version>0.1.0</Version>
+    <Description>List, resume, clean up and transfer coding-agent sessions.</Description>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)../../artifacts</PackageOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.57.2" />
+    <PackageReference Include="Spectre.Console.Cli" Version="0.57.2" />
+  </ItemGroup>
+
+</Project>
