@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using AgentSessions.Adapters;
 using AgentSessions.Model;
@@ -62,7 +61,9 @@ public class ClaudeAdapterTests
         SessionFixtures.WriteLines(sub, UserLine("sub", "C:\\Dev\\proj"));
 
         var result = new ClaudeAdapter(home).Discover();
-        Assert.Single(result.Sessions);
+        var only = Assert.Single(result.Sessions);
+        Assert.Equal(Id, only.Id);
+        Assert.Equal(SessionPath(home), only.StorePath);
     }
 
     [Fact]
@@ -121,9 +122,7 @@ public class ClaudeAdapterTests
         var info = new SessionInfo("claude", Id, "C:\\Dev\\proj", "t", DateTimeOffset.UtcNow, new FileInfo(path).Length, path);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
-        var sw = Stopwatch.StartNew();
         var first = adapter.ReadTranscript(info).First();
-        sw.Stop();
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         Assert.Equal("first", first.Text);
@@ -131,6 +130,33 @@ public class ClaudeAdapterTests
 
         var total = adapter.ReadTranscript(info).Count();
         Assert.Equal(count + 1, total);
+    }
+
+    [Fact]
+    public void Discover_large_session_does_not_parse_whole_file()
+    {
+        var home = SessionFixtures.TempHome();
+        var path = SessionPath(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var filler = new string('x', 1000);
+        using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            w.WriteLine(UserLine("big one", "C:\\Dev\\my app"));
+            for (var i = 0; i < 20_000; i++) w.WriteLine(AssistantText(filler));
+            w.WriteLine(AssistantText("last", "2026-02-02T12:00:00.000Z"));
+            w.Write("{\"type\":\"assistant\",\"timestamp\":\"2026-03-03T00:00:00.0"); // truncated
+        }
+        Assert.True(new FileInfo(path).Length > 19_000_000);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = new ClaudeAdapter(home).Discover();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var s = Assert.Single(result.Sessions);
+        Assert.Equal("big one", s.Title);
+        Assert.Equal("C:\\Dev\\my app", s.ProjectPath);
+        Assert.Equal(DateTimeOffset.Parse("2026-02-02T12:00:00Z"), s.LastActivity);
+        Assert.True(allocated < 3_000_000, $"Discover allocated {allocated} bytes");
     }
 
     [Fact]

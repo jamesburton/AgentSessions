@@ -47,16 +47,56 @@ public class ClaudeAdapter(string homeDir) : ISessionAdapter
         string? cwd = null, title = null;
         DateTimeOffset? newest = null;
 
+        // Head scan: stop as soon as cwd and title are known.
         foreach (var e in JsonlReader.Read(file))
         {
             if (cwd is null && TryString(e, "cwd") is { Length: > 0 } c) cwd = c;
             if (ParseTs(e) is { } ts && (newest is null || ts > newest)) newest = ts;
             if (title is null && IsPromptEntry(e)) title = Title(PromptText(e));
+            if (cwd is not null && title is not null) break;
         }
+        // Tail scan: newest timestamp lives near the end of the file.
+        if (TailNewest(file) is { } tail && (newest is null || tail > newest)) newest = tail;
 
         return new SessionInfo(Name, Path.GetFileNameWithoutExtension(file), cwd,
             title ?? "(no prompt)", newest ?? new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero),
             fi.Length, file);
+    }
+
+    private const int TailBytes = 64 * 1024;
+
+    private static DateTimeOffset? TailNewest(string file)
+    {
+        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var start = Math.Max(0, fs.Length - TailBytes);
+        fs.Seek(start, SeekOrigin.Begin);
+        var buf = new byte[fs.Length - start];
+        var read = 0;
+        while (read < buf.Length)
+        {
+            var n = fs.Read(buf, read, buf.Length - read);
+            if (n <= 0) break;
+            read += n;
+        }
+        var text = System.Text.Encoding.UTF8.GetString(buf, 0, read);
+        if (start > 0)
+        {
+            var nl = text.IndexOf('\n');
+            text = nl < 0 ? "" : text[(nl + 1)..]; // drop the partial first line
+        }
+        DateTimeOffset? newest = null;
+        foreach (var line in text.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && ParseTs(doc.RootElement) is { } ts
+                    && (newest is null || ts > newest)) newest = ts;
+            }
+            catch (JsonException) { } // truncated/garbled line
+        }
+        return newest;
     }
 
     public IEnumerable<TranscriptEntry> ReadTranscript(SessionInfo s)
