@@ -294,6 +294,23 @@ public class CopilotAdapterTests
         Assert.Equal("done", e[3].Text);
     }
 
+    [Fact]
+    public void Discover_skips_session_folders_with_unsafe_ids()
+    {
+        var home = SessionFixtures.TempHome();
+        foreach (var id in new[] { Id, "--resume", "has space" })
+        {
+            Yaml(home, "C:\\Dev\\proj", id: id);
+            SessionFixtures.WriteLines(Events(home, id), Start(), UserMsg("p"));
+        }
+
+        var result = new CopilotAdapter(home).Discover();
+
+        Assert.Equal(Id, Assert.Single(result.Sessions).Id);
+        Assert.Equal(2, result.Skipped.Count);
+        Assert.All(result.Skipped, k => Assert.Contains("unsafe session id", k.Reason));
+    }
+
     private static string ToolStartArgs(string tool, object arguments) =>
         J(new { type = "tool.execution_start", data = new { toolCallId = "t2", toolName = tool, arguments }, id = "e6", timestamp = "2026-01-01T10:04:00.000Z", parentId = "e3" });
 

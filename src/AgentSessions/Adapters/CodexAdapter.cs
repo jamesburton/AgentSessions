@@ -27,6 +27,11 @@ public partial class CodexAdapter(string homeDir) : ISessionAdapter
 
             foreach (var file in files)
             {
+                if (!SessionIds.IsSafe(IdFromFile(file)))
+                {
+                    skipped.Add(new SkippedSession(file, SessionIds.UnsafeReason));
+                    continue;
+                }
                 try { sessions.Add(Summarize(file)); }
                 catch (Exception ex) { skipped.Add(new SkippedSession(file, ex.Message)); }
             }

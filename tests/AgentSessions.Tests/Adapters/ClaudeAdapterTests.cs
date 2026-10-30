@@ -216,6 +216,43 @@ public class ClaudeAdapterTests
         Assert.Equal(new[] { "C:\\Dev\\proj\\a.cs" }, e[1].FilesTouched);
     }
 
+    [Fact]
+    public void Discover_skips_sessions_whose_id_could_become_a_cli_flag_or_is_unsafe()
+    {
+        var home = SessionFixtures.TempHome();
+        foreach (var id in new[] { "--dangerously-skip-permissions", "a b", "x&y", "ok-id_1.2" })
+            SessionFixtures.WriteLines(SessionPath(home, id: id), UserLine("p " + id, "C:\\Dev\\proj"));
+
+        var result = new ClaudeAdapter(home).Discover();
+
+        Assert.Equal("ok-id_1.2", Assert.Single(result.Sessions).Id);
+        Assert.Equal(3, result.Skipped.Count);
+        Assert.All(result.Skipped, k => Assert.Contains("unsafe session id", k.Reason));
+    }
+
+    [WindowsFact]
+    public void One_unreadable_project_folder_does_not_hide_the_other_projects()
+    {
+        var home = SessionFixtures.TempHome();
+        SessionFixtures.WriteLines(SessionPath(home, "C--Dev-good"), UserLine("good one", "C:\\Dev\\good"));
+        // A dangling junction is listed as a project folder but cannot be enumerated.
+        var projects = Path.Combine(home, ".claude", "projects");
+        var target = Path.Combine(home, "gone");
+        Directory.CreateDirectory(target);
+        var link = Path.Combine(projects, "C--Dev-broken");
+        var mk = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+            { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true })!;
+        mk.WaitForExit();
+        Assert.Equal(0, mk.ExitCode);
+        Directory.Delete(target);
+
+        var result = new ClaudeAdapter(home).Discover();
+
+        Assert.Equal("good one", Assert.Single(result.Sessions).Title);
+        var skipped = Assert.Single(result.Skipped);
+        Assert.Equal(link, skipped.Path);
+    }
+
     private static string ToolUse(string name, object input, string ts = "2026-01-01T10:02:00.000Z") =>
         J(new { type = "assistant", sessionId = Id, timestamp = ts, message = new { role = "assistant", content = new object[] { new { type = "tool_use", id = "t9", name, input } } } });
 

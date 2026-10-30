@@ -20,21 +20,29 @@ public class ClaudeAdapter(string homeDir) : ISessionAdapter
         var skipped = new List<SkippedSession>();
         if (!Directory.Exists(_root)) return new DiscoveryResult(sessions, skipped);
 
-        IEnumerable<string> files;
-        try
-        {
-            files = Directory.EnumerateDirectories(_root)
-                .SelectMany(d => Directory.EnumerateFiles(d, "*.jsonl", SearchOption.TopDirectoryOnly))
-                .ToList();
-        }
+        List<string> projects;
+        try { projects = Directory.EnumerateDirectories(_root).ToList(); }
         catch (Exception ex)
         {
             skipped.Add(new SkippedSession(_root, ex.Message));
             return new DiscoveryResult(sessions, skipped);
         }
 
+        // One unreadable project folder is reported and skipped; the other projects still list.
+        var files = new List<string>();
+        foreach (var project in projects)
+        {
+            try { files.AddRange(Directory.EnumerateFiles(project, "*.jsonl", SearchOption.TopDirectoryOnly)); }
+            catch (Exception ex) { skipped.Add(new SkippedSession(project, ex.Message)); }
+        }
+
         foreach (var file in files)
         {
+            if (!SessionIds.IsSafe(Path.GetFileNameWithoutExtension(file)))
+            {
+                skipped.Add(new SkippedSession(file, SessionIds.UnsafeReason));
+                continue;
+            }
             try { sessions.Add(Summarize(file)); }
             catch (Exception ex) { skipped.Add(new SkippedSession(file, ex.Message)); }
         }

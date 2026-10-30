@@ -168,6 +168,20 @@ public class CodexAdapterTests
         Assert.Equal("done", e[4].Text);
     }
 
+    [Fact]
+    public void Discover_skips_sessions_with_unsafe_ids()
+    {
+        var home = SessionFixtures.TempHome();
+        var dir = Path.GetDirectoryName(SessionPath(home))!;
+        SessionFixtures.WriteLines(SessionPath(home), Meta("C:\\Dev\\proj"), UserMsg("good"));
+        SessionFixtures.WriteLines(Path.Combine(dir, "rollout-a b&c.jsonl"), Meta("C:\\Dev\\proj"), UserMsg("bad"));
+
+        var result = new CodexAdapter(home).Discover();
+
+        Assert.Equal(Id, Assert.Single(result.Sessions).Id);
+        Assert.Contains("unsafe session id", Assert.Single(result.Skipped).Reason);
+    }
+
     private static string Ri(object payload, string ts = "2026-01-01T10:05:00.000Z") =>
         J(new { timestamp = ts, type = "response_item", payload });
 
