@@ -97,6 +97,7 @@ public class EndToEndTests : IDisposable
     [Fact]
     public void Fixture_codex_session_transfers_to_claude()
     {
+        // The AppServices constructor overload used by Make() bypasses CreateDefault, so the real data dir is never read.
         var (svc, console) = Make();
         var codexFile = WriteCodex();
         var codexBefore = File.ReadAllBytes(codexFile);
@@ -165,7 +166,7 @@ public class EndToEndTests : IDisposable
 
         var code = Program.Run(["clean", "--apply", "--yes"], console, svc);
 
-        Assert.NotEqual(0, code);   // nothing actionable: reported as an error, not silently "ok"
+        Assert.Equal(1, code);   // everything selected was declined: documented as exit 1, not a silent "ok"
         Assert.Contains("Declined", console.Output);
         Assert.Contains("copilot:" + CopilotId, console.Output.Replace("\n", ""));
         Assert.Contains("Nothing to do.", console.Output);

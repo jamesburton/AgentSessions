@@ -54,6 +54,37 @@ public class CliTests : IDisposable
     private static AdapterCapabilities Full => AdapterCapabilities.List | AdapterCapabilities.Resume
         | AdapterCapabilities.LaunchWithPrompt | AdapterCapabilities.Transcript | AdapterCapabilities.Archive | AdapterCapabilities.Delete;
 
+    private (AppServices Svc, TestConsole Console) Default(string? settingsJson)
+    {
+        var data = Path.Combine(_root, "defdata");
+        Directory.CreateDirectory(data);
+        if (settingsJson is not null) File.WriteAllText(Path.Combine(data, "settings.json"), settingsJson);
+        return (AppServices.CreateDefault(Path.Combine(_root, "defhome"), data), new TestConsole().Width(300));
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("clean")]
+    public void Corrupt_settings_file_is_reported_and_exit_code_unchanged(string command)
+    {
+        var (svc, console) = Default("{ not json");
+        Assert.Equal(0, Program.Run([command], console, svc));
+        Assert.Contains("settings.json could not be read; using defaults", console.Output);
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("clean")]
+    public void Missing_or_valid_settings_file_prints_no_settings_warning(string command)
+    {
+        var (svc, console) = Default(null);
+        Assert.Equal(0, Program.Run([command], console, svc));
+        Assert.DoesNotContain("settings.json", console.Output);
+        var (svc2, console2) = Default("{ \"StaleDays\": 10 }");
+        Assert.Equal(0, Program.Run([command], console2, svc2));
+        Assert.DoesNotContain("settings.json", console2.Output);
+    }
+
     [Fact]
     public void list_prints_agent_project_age_title_and_stale_tag()
     {

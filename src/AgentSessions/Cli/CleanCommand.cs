@@ -43,6 +43,7 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
+        if (services.SettingsWarning is { } warning) console.MarkupLine($"[dim]{Esc(warning)}[/]");
         var action = s.Delete ? CleanupAction.Delete : CleanupAction.Archive;
 
         var all = services.Catalog.List().Sessions;

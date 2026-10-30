@@ -7,11 +7,16 @@ public class SettingsStore(string settingsPath)
     private static readonly JsonSerializerOptions Options = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,   // reads accept any key casing; writes stay camelCase
         WriteIndented = true,
     };
 
+    /// <summary>True when the last <see cref="Load"/> found a settings file it could not use (the defaults were applied).</summary>
+    public bool LastLoadFailed { get; private set; }
+
     public AppSettings Load()
     {
+        LastLoadFailed = false;
         try
         {
             if (!File.Exists(settingsPath)) return new AppSettings();
@@ -19,6 +24,7 @@ public class SettingsStore(string settingsPath)
         }
         catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
+            LastLoadFailed = true;
             return new AppSettings();
         }
     }

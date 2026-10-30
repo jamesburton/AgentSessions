@@ -11,6 +11,8 @@ namespace AgentSessions.Cli;
 public sealed class AppServices
 {
     public AppSettings Settings { get; }
+    /// <summary>Set when settings.json exists but could not be read (defaults are in effect); shown by list and clean.</summary>
+    public string? SettingsWarning { get; init; }
     public IReadOnlyDictionary<string, ISessionAdapter> Adapters { get; }
     public Func<DateTimeOffset> Now { get; }
     public SessionCatalog Catalog { get; }
@@ -39,15 +41,19 @@ public sealed class AppServices
         Transfer = new TransferService(Writer, Polisher, Launcher);
     }
 
-    public static AppServices CreateDefault(string? homeDir = null)
+    public static AppServices CreateDefault(string? homeDir = null, string? dataDir = null)
     {
         homeDir ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var dataDir = SettingsStore.DefaultDataDir();
-        var settings = new SettingsStore(Path.Combine(dataDir, "settings.json")).Load();
+        dataDir ??= SettingsStore.DefaultDataDir();
+        var store = new SettingsStore(Path.Combine(dataDir, "settings.json"));
+        var settings = store.Load();
         ISessionAdapter[] adapters = [new ClaudeAdapter(homeDir), new CodexAdapter(homeDir), new CopilotAdapter(homeDir)];
         return new AppServices(adapters, settings, new ProcessRunner(), new SystemClipboard(),
             () => DateTimeOffset.UtcNow, settings.ArchiveRoot ?? Path.Combine(dataDir, "archive"),
-            new LabelStore(Path.Combine(dataDir, "labels.json")));
+            new LabelStore(Path.Combine(dataDir, "labels.json")))
+        {
+            SettingsWarning = store.LastLoadFailed ? "settings.json could not be read; using defaults." : null
+        };
     }
 }
 

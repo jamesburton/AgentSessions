@@ -93,7 +93,7 @@ Prints a table and a count. Sessions that could not be read are not hidden: a fi
 agentsessions clean [--older-than DAYS] [--ids agent:id,agent:id] [--archive | --delete] [--apply] [--yes]
 ```
 
-Selects stale sessions (older than `StaleDays`, or `--older-than`), or the exact `--ids`. `--ids` and
+Selects stale sessions (older than `staleDays`, or `--older-than`), or the exact `--ids`. `--ids` and
 `--older-than` cannot be combined. Default is to print the plan and change nothing.
 
 - `--archive` (the default action) moves the sessions to the archive.
@@ -136,7 +136,7 @@ agentsessions restore <archive folder>
 ```
 
 Puts an archived session back exactly where it came from. The folder is the one under the archive root that
-contains `manifest.json` (for example `<ArchiveRoot>\claude\<id>`).
+contains `manifest.json` (for example `<archiveRoot>\claude\<id>`).
 
 ## Safety rules
 
@@ -144,9 +144,9 @@ contains `manifest.json` (for example `<ArchiveRoot>\claude\<id>`).
 - The default action is archive, not delete. Delete must be asked for explicitly with `--delete` (or `d` in the TUI)
   and also needs `--apply`.
 - Every applied cleanup asks for confirmation (default No); `--yes` skips it explicitly. The TUI needs a deliberate `y`.
-- Sessions with recent activity (within `RecentActiveMinutes`) are flagged as possibly still running; the plan shows
+- Sessions with recent activity (within `recentActiveMinutes`) are flagged as possibly still running; the plan shows
   a warning and the confirmation prompt counts them.
-- The archive lives under `ArchiveRoot` (default: `archive` inside the settings folder, see Settings), laid out as
+- The archive lives under `archiveRoot` (default: `archive` inside the settings folder, see Settings), laid out as
   `<agent>/<id>/` with a `manifest.json` and the original files. Moves are verified, and if anything fails part way
   the originals are put back.
 - `restore` never overwrites: if anything already exists at an original path, it stops and changes nothing.
@@ -167,7 +167,7 @@ involved unless you opt in.
 
 Optional polish: an extra pass through a command you configure. It is off by default.
 
-- Enable with `PolishEnabled: true` and set `PolishCommand` (settings below).
+- Enable with `polishEnabled: true` and set `polishCommand` (settings below).
 - Use it with `transfer --polish`, or answer `y` to the prompt in the TUI.
 - Contract: the command is run without a shell (arguments split on spaces, double quotes group), receives the handoff
   Markdown on stdin and must write the polished Markdown to stdout and exit 0. It has a 120 second limit and capped
@@ -185,15 +185,21 @@ corrupt labels file is kept as a backup copy and treated as empty.
 ## Settings
 
 A JSON file, `settings.json`, in `%LOCALAPPDATA%\AgentSessions\` (the same folder holds `labels.json` and, by
-default, the `archive` folder). If it is missing or unreadable the defaults are used. Keys are camelCase.
+default, the `archive` folder), i.e. `settings.json` next to `labels.json`.
+
+- Key names are case-insensitive (`staleDays`, `staleDays` and `STALEDAYS` are the same key); the tool writes camelCase.
+- Unknown or misspelled keys are ignored, so check the spelling against the table.
+- A missing file means all defaults. A file that exists but is malformed or unreadable is also ignored and the
+  defaults apply; `list` and `clean` then print a dim line, `settings.json could not be read; using defaults.`, but
+  the exit code is unchanged. (The TUI shows no such line.)
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `StaleDays` | `30` | Sessions inactive longer than this are stale |
-| `ArchiveRoot` | settings folder `\archive` | Where `clean --archive` puts sessions |
-| `PolishEnabled` | `false` | Allow the opt-in polish pass |
-| `PolishCommand` | none | Command for polish (stdin to stdout), e.g. `mymodel --polish` |
-| `RecentActiveMinutes` | `15` | Activity within this window counts as "possibly active" |
+| `staleDays` | `30` | Sessions inactive longer than this are stale |
+| `archiveRoot` | settings folder `\archive` | Where `clean --archive` puts sessions |
+| `polishEnabled` | `false` | Allow the opt-in polish pass |
+| `polishCommand` | none | Command for polish (stdin to stdout), e.g. `mymodel --polish` |
+| `recentActiveMinutes` | `15` | Activity within this window counts as "possibly active" |
 
 ```json
 { "staleDays": 45, "archiveRoot": "D:\\session-archive", "polishEnabled": false }
@@ -222,6 +228,7 @@ Not yet supported: Antigravity, OpenCode, Hermes.
   the shim path contains `!`, `^`, `%` or `"` (cmd.exe would reinterpret them). Run the agent by hand in that case.
 - A label that begins with `-` needs `--` before it: `agentsessions rename claude <id> -- -my label`.
 - Format-control characters (Unicode category Cf, such as zero-width joiners) are stripped from labels.
+- Copilot: hidden (dot-prefixed) folders under `session-state` are treated as the agent's bookkeeping and skipped by `list`, not counted as unreadable sessions.
 - The agents' on-disk formats are not public contracts and can change; unreadable sessions are skipped and counted.
 
 ## Development

@@ -159,7 +159,7 @@ public class HandoffWriterTests : IDisposable
     {
         SeedHandoff("old");
         var r = new HandoffWriter(() => T).Write(_root, "NEW\n", Src);
-        var names = Directory.GetFiles(Path.GetDirectoryName(r.HandoffPath)!).Select(Path.GetFileName).Order().ToArray();
+        var names = Directory.GetFiles(Path.GetDirectoryName(r.HandoffPath)!).Select(p => Path.GetFileName(p)!).Order().ToArray();
         Assert.Equal(["handoff.2026-10-30T1234.md", "handoff.md"], names);
     }
 }

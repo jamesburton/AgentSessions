@@ -255,7 +255,7 @@ public sealed class CleanupServiceTests : IDisposable
         var arc = Forced(ArchiveRoot, Home, a => a.BeforeDeleteOriginal = p => { File.Delete(p); throw new IOException("late error"); });
         var dir = arc.Archive(Info("s1", f), [f]);
         Assert.False(File.Exists(f));
-        Assert.Equal(1, Directory.EnumerateFiles(dir, "single.bin", SearchOption.AllDirectories).Count());
+        Assert.Single(Directory.EnumerateFiles(dir, "single.bin", SearchOption.AllDirectories));
     }
 
     [Fact]
@@ -272,7 +272,7 @@ public sealed class CleanupServiceTests : IDisposable
         Assert.Throws<IOException>(() => arc.Restore(dir));
         Assert.Equal("someone else's file", File.ReadAllText(foreign));
         Assert.True(File.Exists(Path.Combine(dir, "manifest.json")));
-        Assert.Empty(Directory.EnumerateFiles(tree).Where(p => p != foreign));   // copied files gone, only the foreign one remains
+        Assert.Single(Directory.EnumerateFiles(tree), foreign);   // copied files gone, only the foreign one remains
     }
 
     [Fact]

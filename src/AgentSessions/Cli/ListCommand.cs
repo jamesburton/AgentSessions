@@ -30,6 +30,7 @@ public sealed class ListCommand(AppServices services, IAnsiConsole console) : Co
 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
+        if (services.SettingsWarning is { } warning) console.MarkupLine($"[dim]{Esc(warning)}[/]");
         TimeSpan? older = s.OlderThan is { } d ? TimeSpan.FromDays(d) : null;
         var (sessions, skipped) = services.Catalog.List(new SessionFilter(s.Agent, s.Project, older));
         var rows = s.Stale ? sessions.Where(x => x.IsStale).ToList() : sessions.ToList();
