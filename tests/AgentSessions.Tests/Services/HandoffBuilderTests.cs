@@ -190,10 +190,23 @@ public class HandoffBuilderTests
     }
 
     [Fact]
-    public void Empty_entry_text_renders_placeholder()
+    public void Empty_messages_are_skipped_so_they_cannot_crowd_out_real_text()
     {
-        var md = HandoffBuilder.Build(Info, [E(Role.User, "")]);
-        Assert.Contains("> (empty)", md);
+        // e.g. Copilot writes an assistant.message with empty content for every turn that only requests tools.
+        var entries = new List<TranscriptEntry> { E(Role.User, "Real request"), E(Role.Assistant, "Real answer") };
+        for (var i = 0; i < 30; i++) entries.Add(E(Role.Assistant, i % 2 == 0 ? "" : "  \n "));
+        var md = HandoffBuilder.Build(Info, entries, new HandoffOptions(MaxRecentEntries: 5));
+        Assert.DoesNotContain("(empty)", md);
+        Assert.Contains("Real answer", Section(md, "## Recent activity"));
+        Assert.Contains("Real answer", Section(md, "## Where it stopped"));
+    }
+
+    [Fact]
+    public void Only_empty_messages_give_the_none_placeholders()
+    {
+        var md = HandoffBuilder.Build(Info, [E(Role.User, ""), E(Role.Assistant, " ")]);
+        Assert.Contains("_(none: no activity found in the transcript)_", md);
+        Assert.Contains("_(none: no user prompt found in the transcript)_", md);
     }
 
     [Fact]
@@ -227,6 +240,88 @@ public class HandoffBuilderTests
         var k = md.IndexOf("## Where it stopped", StringComparison.Ordinal);
         Assert.Contains("**Assistant**", md[k..]);
         Assert.Contains("done", md[k..]);
+    }
+
+    private static string Section(string md, string heading)
+    {
+        var i = md.IndexOf("\n" + heading + "\n", StringComparison.Ordinal);
+        Assert.True(i >= 0, $"missing {heading}");
+        var rest = md[(i + heading.Length + 2)..];
+        var j = rest.IndexOf("\n## ", StringComparison.Ordinal);
+        return j < 0 ? rest : rest[..j];
+    }
+
+    // Tool invocation = Role.Tool with a ToolName; tool output = Role.Tool with ToolName null (TranscriptEntry contract).
+    private static TranscriptEntry Call(string tool, string text, params string[] files) => new(Role.Tool, text, null, tool, files);
+    private static TranscriptEntry Output(string text) => new(Role.Tool, text, null, null, []);
+
+    [Fact]
+    public void Tool_calls_render_with_their_name_and_command_and_outputs_are_omitted_but_counted()
+    {
+        var md = HandoffBuilder.Build(Info, [
+            E(Role.User, "Run the tests"),
+            Call("Bash", "dotnet test"),
+            Output("Passed! 300 tests HUGE-OUTPUT-BODY"),
+            E(Role.Assistant, "All green.")]);
+
+        var recent = Section(md, "## Recent activity");
+        Assert.Contains("**Tool (Bash)**:\n> dotnet test\n", recent);
+        Assert.DoesNotContain("HUGE-OUTPUT-BODY", md);
+        Assert.Contains("1 tool result omitted", recent);
+        Assert.DoesNotContain("(empty)", md);
+        Assert.Contains("dotnet test", Section(md, "## Last commands"));
+    }
+
+    [Fact]
+    public void Tool_calls_without_text_are_skipped_from_recent_activity()
+    {
+        var md = HandoffBuilder.Build(Info, [E(Role.User, "go"), Call("Read", ""), Call("Glob", "  "), E(Role.Assistant, "ok")]);
+        Assert.DoesNotContain("(empty)", md);
+        Assert.DoesNotContain("**Tool", md);
+    }
+
+    [Fact]
+    public void A_tool_heavy_tail_cannot_evict_the_conversation()
+    {
+        var entries = new List<TranscriptEntry> { E(Role.User, "Please fix the build"), E(Role.Assistant, "Working on the build fix now") };
+        for (var i = 0; i < 50; i++) { entries.Add(Call("Bash", $"step-{i:D2}")); entries.Add(Output("out " + i)); }
+
+        var md = HandoffBuilder.Build(Info, entries, new HandoffOptions(MaxRecentEntries: 20));
+
+        var recent = Section(md, "## Recent activity");
+        Assert.Contains("Please fix the build", recent);
+        Assert.Contains("Working on the build fix now", recent);
+        Assert.Contains("step-49", recent);
+        Assert.DoesNotContain("step-29", recent);   // only the last 20 tool calls are shown
+        Assert.Contains("50 tool results omitted", recent);
+        var stop = Section(md, "## Where it stopped");
+        Assert.Contains("**Assistant**:\n> Working on the build fix now", stop);
+        Assert.Contains("**Tool (Bash)**:\n> step-49", stop);   // the last tool call came after it
+        Assert.DoesNotContain("(empty)", md);
+    }
+
+    [Fact]
+    public void Where_it_stopped_has_no_tool_note_when_the_conversation_came_last()
+    {
+        var md = HandoffBuilder.Build(Info, [Call("Bash", "git status"), E(Role.Assistant, "Clean tree.")]);
+        var stop = Section(md, "## Where it stopped");
+        Assert.Contains("Clean tree.", stop);
+        Assert.DoesNotContain("git status", stop);
+    }
+
+    [Fact]
+    public void Where_it_stopped_falls_back_to_the_last_tool_call_without_any_conversation()
+    {
+        var md = HandoffBuilder.Build(Info, [Call("Bash", "make all")]);
+        Assert.Contains("**Tool (Bash)**:\n> make all", Section(md, "## Where it stopped"));
+    }
+
+    [Fact]
+    public void Multi_line_commands_stay_on_one_line_in_recent_activity()
+    {
+        var md = HandoffBuilder.Build(Info, [Call("Bash", "echo a\n## Fake\necho b")]);
+        Assert.Equal(ExpectedHeadings, Headings(md));
+        Assert.Contains("> echo a ## Fake echo b", Section(md, "## Recent activity"));
     }
 
     [Fact]

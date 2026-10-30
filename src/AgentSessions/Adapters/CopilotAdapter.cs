@@ -6,7 +6,7 @@ namespace AgentSessions.Adapters;
 /// <summary>
 /// Copilot CLI sessions: one folder per session under ~/.copilot/session-state.
 /// Archive/Delete are deliberately NOT offered: ~/.copilot/session-store.db keeps per-session rows
-/// (including FTS data and message copies) that cannot be kept consistent safely (docs/formats/copilot.md).
+/// (including FTS data and message copies) that cannot be kept consistent safely (docs/formats/copilot-format.md).
 /// </summary>
 public class CopilotAdapter(string homeDir) : ISessionAdapter
 {
@@ -96,9 +96,7 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
                     yield return new TranscriptEntry(Role.Assistant, TryString(d, "content") ?? "", ts, null, []);
                     break;
                 case "tool.execution_start":
-                    var files = d.TryGetProperty("arguments", out var a) && TryString(a, "path") is { Length: > 0 } p
-                        ? new[] { p } : [];
-                    yield return new TranscriptEntry(Role.Tool, "", ts, TryString(d, "toolName"), files);
+                    yield return ToolCall(TryString(d, "toolName") ?? "tool", d.TryGetProperty("arguments", out var a) ? a : default, ts);
                     break;
                 case "tool.execution_complete":
                     var text = d.TryGetProperty("result", out var r) ? TryString(r, "content") ?? "" : "";
@@ -118,6 +116,26 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
     public IReadOnlyList<string> OwnedPaths(SessionInfo s) => [s.StorePath];
 
     // ---- helpers ----
+
+    /// <summary>
+    /// A tool invocation: <c>arguments</c> is an object for most tools (command from <c>command</c>/<c>cmd</c>, else a
+    /// compact JSON summary; files from <c>path</c>) and a raw patch STRING for <c>apply_patch</c> (files from the patch).
+    /// </summary>
+    private static TranscriptEntry ToolCall(string name, JsonElement args, DateTimeOffset? ts)
+    {
+        if (args.ValueKind == JsonValueKind.String)
+        {
+            var raw = args.GetString() ?? "";
+            if (ToolText.IsPatch(raw) || name == "apply_patch")
+            {
+                var patched = ToolText.PatchFiles(raw);
+                return new TranscriptEntry(Role.Tool, ToolText.PatchSummary(name, raw, patched), ts, name, patched);
+            }
+            return new TranscriptEntry(Role.Tool, ToolText.FirstLine(raw), ts, name, []);
+        }
+        IReadOnlyList<string> files = TryString(args, "path") is { Length: > 0 } p ? [p] : [];
+        return new TranscriptEntry(Role.Tool, ToolText.CommandOrSummary(args), ts, name, files);
+    }
 
     /// <summary>Title from the newest NNN-*.md checkpoint: its first "# " heading, else the first line of its overview.</summary>
     private static string? CheckpointTitle(string dir)

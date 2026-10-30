@@ -245,4 +245,4 @@ Tests use only temp folders and fakes; they never touch real agent data, setting
 ### Format notes
 
 What each agent writes to disk, and how it is parsed, is documented in [`docs/formats/`](docs/formats/):
-[Claude](docs/formats/claude.md), [Codex](docs/formats/codex.md), [Copilot](docs/formats/copilot.md).
+[Claude](docs/formats/claude-format.md), [Codex](docs/formats/codex-format.md), [Copilot](docs/formats/copilot-format.md).

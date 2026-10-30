@@ -37,9 +37,23 @@ Blank lines and a truncated final line are possible while a session is being wri
 | `user.message` | `content` (string; the typed prompt), `transformedContent`, `attachments[]`, `interactionId` |
 | `assistant.turn_start` / `assistant.turn_end` | `turnId`, `interactionId` (skip) |
 | `assistant.message` | `messageId`, `content`, `toolRequests[{toolCallId,name,arguments,type}]`, `phase`, `outputTokens`, `reasoningOpaque`, `encryptedContent` |
-| `tool.execution_start` | `toolCallId`, `toolName`, `arguments{...}` (varies per tool; a `path` string is used for files touched when present) |
-| `tool.execution_complete` | `toolCallId`, `success`, `result{content,detailedContent}`, `toolTelemetry` |
+| `tool.execution_start` | `toolCallId`, `toolName`, `arguments` (an object that varies per tool, see below; a **string** for `apply_patch`) |
+| `tool.execution_complete` | `toolCallId`, `success`, `result{content,detailedContent?,structuredContent?}` (`result` can be null), `toolTelemetry` |
 | `hook.start` / `hook.end`, `permission.requested` / `permission.completed` | bookkeeping (skip) |
+
+### Tool arguments (verified 2026-10-30 against one real session; names and types only)
+
+`powershell`: `command` (string), `description`, `initial_wait` (int), `mode`, `shellId` (optional); `view`: `path`,
+`view_range`; `apply_patch`: the patch text itself as a string (`*** Begin Patch` / `*** Update File: <p>` ...);
+`web_fetch`: `url`, `max_length`; `rg`: `pattern`, `paths` (string or array), flags; `glob`: `pattern`, `paths`;
+`sql`: `description`, `query`; `skill`, `task`, `ask_user`, `read_powershell` and MCP tools (`github-mcp-server-*`).
+
+Transcript mapping (`CopilotAdapter.ReadTranscript`): `tool.execution_start` -> invocation (ToolName = `toolName`) with
+text = `arguments.command` / `arguments.cmd`, else compact JSON of the arguments (200 chars); a string argument is a
+patch (text `apply_patch: <files>`, files from the patch) or else summarised by its first line; files also from
+`arguments.path`. `tool.execution_complete` -> output entry (ToolName null) with `result.content`.
+`assistant.message` entries whose `content` is empty (turns that only request tools) are kept by the adapter and
+skipped by the handoff builder.
 
 ## checkpoints/
 
@@ -57,7 +71,7 @@ Blank lines and a truncated final line are possible while a session is being wri
 | title | newest `checkpoints/NNN-*.md` (highest name): first `# ` heading that appears before the first `<section>` tag, else first line of `<overview>` (a heading inside `<history>` etc. is content, not a title); else first `user.message` `data.content`; else `(no prompt)` |
 | last activity | `JsonlReader.TailNewest` over `events.jsonl` (max `timestamp` in the last 64 KB; returns the events file mtime when the final line exceeds the window). Only if `events.jsonl` is absent (or yields nothing, e.g. empty) does it fall back to `workspace.yaml` `updated_at`, then the folder mtime |
 | user / assistant text | `user.message`, `assistant.message` |
-| tool calls | `tool.execution_start.toolName` (files from `arguments.path`), output from `tool.execution_complete.result.content` |
+| tool calls | `tool.execution_start.toolName` (command from `arguments.command`/`cmd`; files from `arguments.path` or the `apply_patch` string), output from `tool.execution_complete.result.content` |
 
 `SizeBytes` is an approximation, not a recursive folder size: `events.jsonl` + `workspace.yaml` + the top-level `checkpoints/*.md` lengths (a missing or locked file counts as 0). `rewind-snapshots/`, `files/`, `research/` can hold thousands of files and are never enumerated.
 

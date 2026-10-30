@@ -50,7 +50,7 @@ src/AgentSessions/
   Cli/         ListCommand.cs, CleanCommand.cs, ResumeCommand.cs, TransferCommand.cs, RestoreCommand.cs
   Tui/         MainScreen.cs
 tests/AgentSessions.Tests/        one test file per source file, plus Fixtures/SessionFixtures.cs
-docs/formats/                     claude.md, codex.md, copilot.md (schema notes from the format spikes)
+docs/formats/                     claude-format.md, codex-format.md, copilot-format.md (schema notes from the format spikes)
 ```
 
 ---
@@ -118,14 +118,14 @@ docs/formats/                     claude.md, codex.md, copilot.md (schema notes 
 ### Task 4: Claude adapter
 
 **Files:**
-- Create: `src/AgentSessions/Adapters/JsonlReader.cs`, `ClaudeAdapter.cs`, `docs/formats/claude.md`
+- Create: `src/AgentSessions/Adapters/JsonlReader.cs`, `ClaudeAdapter.cs`, `docs/formats/claude-format.md`
 - Test: `tests/AgentSessions.Tests/Adapters/ClaudeAdapterTests.cs`
 
 **Interfaces:**
 - Consumes: Task 2 model.
 - Produces: `static class JsonlReader { static IEnumerable<JsonElement> Read(string path) }` (streams lines, opens with `FileShare.ReadWrite`, skips blank or unparseable lines, including a truncated final line); `class ClaudeAdapter(string homeDir) : ISessionAdapter` with `Name == "claude"`, store root `<home>/.claude/projects`.
 
-- [ ] **Step 1 (format spike):** Inspect ONE real session under `~/.claude/projects/*/` printing only JSON property names, never message text. Record the schema (where the user prompt, assistant text, tool calls, cwd, timestamps and session id live; how the project folder name encodes the path) in `docs/formats/claude.md`. Build fixtures from this schema.
+- [ ] **Step 1 (format spike):** Inspect ONE real session under `~/.claude/projects/*/` printing only JSON property names, never message text. Record the schema (where the user prompt, assistant text, tool calls, cwd, timestamps and session id live; how the project folder name encodes the path) in `docs/formats/claude-format.md`. Build fixtures from this schema.
 - [ ] **Step 2: Write failing tests** (fixture sessions in a temp home):
   - `Discover_lists_session_with_title_from_first_user_prompt`
   - `Discover_recovers_project_path_from_session_content` (path with spaces)
@@ -141,27 +141,27 @@ docs/formats/                     claude.md, codex.md, copilot.md (schema notes 
 ### Task 5: Codex adapter
 
 **Files:**
-- Create: `src/AgentSessions/Adapters/CodexAdapter.cs`, `docs/formats/codex.md`
+- Create: `src/AgentSessions/Adapters/CodexAdapter.cs`, `docs/formats/codex-format.md`
 - Test: `tests/AgentSessions.Tests/Adapters/CodexAdapterTests.cs`
 
 **Interfaces:**
 - Produces: `class CodexAdapter(string homeDir) : ISessionAdapter`, `Name == "codex"`. Scans `<home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; also lists `<home>/.codex/archived_sessions/` sessions flagged by `StorePath`.
 
-- [ ] **Step 1 (format spike):** As Task 4 step 1 for `~/.codex/sessions` (property names only); write `docs/formats/codex.md`.
+- [ ] **Step 1 (format spike):** As Task 4 step 1 for `~/.codex/sessions` (property names only); write `docs/formats/codex-format.md`.
 - [ ] **Step 2: Write failing tests:** `Discover_lists_rollout_with_id_from_filename`, `Discover_recovers_project_path_from_session_meta`, `Truncated_final_line_still_lists_session`, `BuildResume_returns_codex_resume_with_id` (`codex resume <id>`), `BuildNew_passes_prompt_positionally`, `OwnedPaths_returns_the_rollout_file`, `Discover_includes_archived_sessions`.
 - [ ] **Step 3:** FAIL. **Step 4:** Implement (Capabilities: all). **Step 5:** PASS. **Step 6: Commit** `feat: codex adapter`
 
 ### Task 6: Copilot adapter and cleanup-safety spike
 
 **Files:**
-- Create: `src/AgentSessions/Adapters/CopilotAdapter.cs`, `docs/formats/copilot.md`
+- Create: `src/AgentSessions/Adapters/CopilotAdapter.cs`, `docs/formats/copilot-format.md`
 - Test: `tests/AgentSessions.Tests/Adapters/CopilotAdapterTests.cs`
 
 **Interfaces:**
 - Produces: `class CopilotAdapter(string homeDir) : ISessionAdapter`, `Name == "copilot"`. Scans `<home>/.copilot/session-state/<id>/` (`workspace.yaml`, `events.jsonl`, `checkpoints/`).
 
-- [ ] **Step 1 (format spike):** Inspect one real session folder (property names only; `workspace.yaml` keys). Record in `docs/formats/copilot.md`. Use the `checkpoints/` summaries as the title source when present.
-- [ ] **Step 2 (safety spike, decision gate):** Open `~/.copilot/session-store.db` READ-ONLY and determine whether it holds per-session rows that must change when a session folder is archived or deleted. Record the finding in `docs/formats/copilot.md` as one of: **safe** (folder move is enough or rows can be updated consistently) or **unsafe** (cleanup declined). Do not modify the real database.
+- [ ] **Step 1 (format spike):** Inspect one real session folder (property names only; `workspace.yaml` keys). Record in `docs/formats/copilot-format.md`. Use the `checkpoints/` summaries as the title source when present.
+- [ ] **Step 2 (safety spike, decision gate):** Open `~/.copilot/session-store.db` READ-ONLY and determine whether it holds per-session rows that must change when a session folder is archived or deleted. Record the finding in `docs/formats/copilot-format.md` as one of: **safe** (folder move is enough or rows can be updated consistently) or **unsafe** (cleanup declined). Do not modify the real database.
 - [ ] **Step 3: Write failing tests:** `Discover_lists_session_with_title_from_checkpoint`, `Discover_recovers_project_path_from_workspace_yaml`, `Truncated_events_line_still_lists_session`, `BuildResume_returns_copilot_resume_with_id` (`copilot --resume <id>`), `BuildNew_uses_interactive_prompt_flag` (`-i <prompt>`), and by outcome of step 2 either `Capabilities_include_archive_and_delete` or `Capabilities_exclude_archive_and_delete`.
 - [ ] **Step 4:** FAIL. **Step 5:** Implement; if unsafe, Capabilities omit `Archive|Delete`. If safe, implement `AfterRemove` to keep the database consistent. **Step 6:** PASS. **Step 7: Commit** `feat: copilot adapter`
 

@@ -168,6 +168,99 @@ public class CodexAdapterTests
         Assert.Equal("done", e[4].Text);
     }
 
+    private static string Ri(object payload, string ts = "2026-01-01T10:05:00.000Z") =>
+        J(new { timestamp = ts, type = "response_item", payload });
+
+    private static string RiMsg(string role, params string[] texts) =>
+        Ri(new { type = "message", role, content = texts.Select(t => new { type = role == "assistant" ? "output_text" : "input_text", text = t }).ToArray() });
+
+    private List<TranscriptEntry> Transcript(params string[] lines)
+    {
+        var home = SessionFixtures.TempHome();
+        SessionFixtures.WriteLines(SessionPath(home), [Meta("C:\\Dev\\proj"), .. lines]);
+        var adapter = new CodexAdapter(home);
+        return adapter.ReadTranscript(Assert.Single(adapter.Discover().Sessions)).ToList();
+    }
+
+    [Fact]
+    public void ReadTranscript_puts_shell_commands_on_function_calls()
+    {
+        var e = Transcript(
+            Ri(new { type = "function_call", name = "shell_command", call_id = "a", arguments = "{\"command\":\"dotnet test\",\"workdir\":\"C:\\\\p\"}" }),
+            Ri(new { type = "function_call", name = "shell", call_id = "b", arguments = "{\"command\":[\"git\",\"status\",\"--short\"]}" }),
+            Ri(new { type = "function_call", name = "wait_agent", call_id = "c", arguments = "{\"timeout_ms\":5}" }),
+            Ri(new { type = "function_call", name = "broken", call_id = "d", arguments = "{not json" }));
+
+        Assert.Equal(("shell_command", "dotnet test"), (e[0].ToolName, e[0].Text));
+        Assert.Equal(("shell", "git status --short"), (e[1].ToolName, e[1].Text));
+        Assert.Equal(("wait_agent", "{\"timeout_ms\":5}"), (e[2].ToolName, e[2].Text));
+        Assert.Equal(("broken", "{not json"), (e[3].ToolName, e[3].Text));
+    }
+
+    [Fact]
+    public void ReadTranscript_extracts_commands_and_patch_files_from_exec_code_cells()
+    {
+        // Modern Codex wraps tool use in a JS "exec" cell; the command and any patch are JS string literals.
+        const string cell = "const r = await tools.exec_command({cmd: \"dotnet build -c Release\", yield_time_ms: 1000});\ntext(r.output);";
+        const string patchCell = "await tools.apply_patch(\"*** Begin Patch\\n*** Update File: C:\\\\Dev\\\\proj\\\\b.cs\\n@@\\n-a\\n+b\\n*** Add File: C:\\\\Dev\\\\proj\\\\c.cs\\n+x\\n*** End Patch\");";
+        const string other = "\n// list agents\nconst x = await tools.list_agents({});";
+        var e = Transcript(
+            Ri(new { type = "custom_tool_call", name = "exec", call_id = "a", input = cell }),
+            Ri(new { type = "custom_tool_call_output", call_id = "a", output = new object[] { new { type = "input_text", text = "Build succeeded." } } }),
+            Ri(new { type = "custom_tool_call", name = "exec", call_id = "b", input = patchCell }),
+            Ri(new { type = "custom_tool_call", name = "exec", call_id = "c", input = other }));
+
+        Assert.Equal(("exec_command", "dotnet build -c Release"), (e[0].ToolName, e[0].Text));
+        Assert.Equal((Role.Tool, (string?)null, "Build succeeded."), (e[1].Role, e[1].ToolName, e[1].Text));
+        Assert.Equal("apply_patch", e[2].ToolName);
+        Assert.Equal(new[] { "C:\\Dev\\proj\\b.cs", "C:\\Dev\\proj\\c.cs" }, e[2].FilesTouched);
+        Assert.Contains("b.cs", e[2].Text);
+        Assert.Equal(("exec", "// list agents"), (e[3].ToolName, e[3].Text));
+    }
+
+    [Fact]
+    public void ReadTranscript_summarises_apply_patch_custom_calls()
+    {
+        var e = Transcript(Patch("C:\\Dev\\proj\\a.cs"));
+        Assert.Equal("apply_patch", e[0].ToolName);
+        Assert.Contains("a.cs", e[0].Text);
+    }
+
+    [Fact]
+    public void ReadTranscript_reads_modern_sessions_that_only_have_response_item_messages()
+    {
+        var e = Transcript(
+            RiMsg("developer", "system rules"),
+            RiMsg("user", "# AGENTS.md instructions for C:\\Dev\\proj\n\nrules"),
+            RiMsg("user", "<environment_context>\n<cwd>C:\\Dev\\proj</cwd>\n</environment_context>"),
+            RiMsg("user", "Refactor the uploader"),
+            RiMsg("assistant", "Refactored."));
+
+        Assert.Equal(new[] { (Role.User, "Refactor the uploader"), (Role.Assistant, "Refactored.") }, e.Select(x => (x.Role, x.Text)));
+    }
+
+    [Fact]
+    public void ReadTranscript_does_not_duplicate_messages_present_both_as_event_and_response_item()
+    {
+        var e = Transcript(
+            RiMsg("user", "go"), UserMsg("go"),
+            AgentMsg("sure"), RiMsg("assistant", "sure"),
+            UserMsg("continue"), RiMsg("user", "continue"),
+            UserMsg("continue"), RiMsg("user", "continue"));
+
+        Assert.Equal(new[] { "go", "sure", "continue", "continue" }, e.Select(x => x.Text));
+    }
+
+    [Fact]
+    public void Discover_title_falls_back_to_the_first_real_response_item_prompt()
+    {
+        var home = SessionFixtures.TempHome();
+        SessionFixtures.WriteLines(SessionPath(home), Meta("C:\\Dev\\proj"),
+            RiMsg("user", "# AGENTS.md instructions for x"), RiMsg("user", "<environment_context>x</environment_context>"),
+            RiMsg("user", "Modern prompt here"));
+        Assert.Equal("Modern prompt here", Assert.Single(new CodexAdapter(home).Discover().Sessions).Title);
+    }
+
     [Fact]
     public void ReadTranscript_streams_large_file_without_loading_whole()
     {

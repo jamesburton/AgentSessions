@@ -53,6 +53,20 @@ Some non-message entries (`ai-title`, `last-prompt`, `mode`) carry only `session
     `input.file_path`, `input.path`, `input.notebook_path` (strings).
   - plus `message.model`, `message.usage`, `message.stop_reason`.
 
+### Tool calls (verified 2026-10-30 against one real session; names and types only)
+
+`tool_use.input` is an object whose keys depend on the tool, e.g. `Bash` / `PowerShell`: `command` (string),
+`description` (string), `run_in_background` (bool, optional); `Edit`: `file_path`, `old_string`, `new_string`,
+`replace_all`; `Write`: `file_path`, `content`; `Read`: `file_path`; `Grep`: `pattern`, `path`, `output_mode`, flags;
+`Agent`: `description`, `prompt`, `subagent_type`, ...
+
+Transcript mapping (`ClaudeAdapter.ReadTranscript`):
+- `user`/`assistant` entries flagged `isMeta` or `isSidechain` are skipped (the same predicate as the title), so an
+  injected note such as the local-command "Caveat: ..." never becomes the handoff's original request.
+- `tool_use` -> a tool invocation entry (ToolName = `name`): text = `input.command` when present, else a one-line
+  compact JSON of `input` truncated to 200 chars; files touched from `input.file_path` / `path` / `notebook_path`.
+- `tool_result` -> a tool output entry (ToolName null) with the result text.
+
 ### Where things live
 
 | Need | Source |

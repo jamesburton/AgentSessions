@@ -294,6 +294,31 @@ public class CopilotAdapterTests
         Assert.Equal("done", e[3].Text);
     }
 
+    private static string ToolStartArgs(string tool, object arguments) =>
+        J(new { type = "tool.execution_start", data = new { toolCallId = "t2", toolName = tool, arguments }, id = "e6", timestamp = "2026-01-01T10:04:00.000Z", parentId = "e3" });
+
+    [Fact]
+    public void ReadTranscript_puts_the_command_text_on_tool_invocations()
+    {
+        var home = SessionFixtures.TempHome();
+        Yaml(home, "C:\\Dev\\proj");
+        SessionFixtures.WriteLines(Events(home), Start(), UserMsg("go"),
+            ToolStartArgs("powershell", new { command = "dotnet test", description = "Run tests", initial_wait = 30 }),
+            ToolStartArgs("bash", new { cmd = "ls -la" }),
+            ToolStartArgs("web_fetch", new { url = "https://example.com", max_length = 100 }),
+            ToolStartArgs("apply_patch", "*** Begin Patch\n*** Update File: C:\\Dev\\proj\\b.cs\n@@\n-a\n+b\n*** End Patch\n"));
+        var adapter = new CopilotAdapter(home);
+        var e = adapter.ReadTranscript(Assert.Single(adapter.Discover().Sessions)).ToList();
+
+        Assert.Equal(("powershell", "dotnet test"), (e[1].ToolName, e[1].Text));
+        Assert.Equal(("bash", "ls -la"), (e[2].ToolName, e[2].Text));
+        Assert.Equal("web_fetch", e[3].ToolName);
+        Assert.Contains("\"url\":\"https://example.com\"", e[3].Text);
+        Assert.Equal("apply_patch", e[4].ToolName);
+        Assert.Equal(new[] { "C:\\Dev\\proj\\b.cs" }, e[4].FilesTouched);
+        Assert.Contains("b.cs", e[4].Text);
+    }
+
     [Fact]
     public void ReadTranscript_streams_large_file_without_loading_whole()
     {
@@ -346,7 +371,7 @@ public class CopilotAdapterTests
         Assert.Equal(new[] { SessionDir(home) }, adapter.OwnedPaths(s));
     }
 
-    // Safety spike verdict: UNSAFE (see docs/formats/copilot.md). Cleanup is declined.
+    // Safety spike verdict: UNSAFE (see docs/formats/copilot-format.md). Cleanup is declined.
     [Fact]
     public void Capabilities_exclude_archive_and_delete()
     {
