@@ -104,7 +104,7 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
         foreach (var p in plan)
         {
             var i = p.Session.Info;
-            console.MarkupLine($"  {Esc(i.Agent)}:{Esc(i.Id)}  {Esc(i.Title)}  ({Size(i.SizeBytes)})");
+            console.MarkupLine($"  {Esc(i.Agent)}:{Esc(i.Id)}  {Esc(p.Session.DisplayTitle)}  ({Size(i.SizeBytes)})");
             foreach (var path in p.Paths) console.MarkupLine($"      {Esc(path)}");
             if (p.Warning is not null) console.MarkupLine($"      [yellow]Warning:[/] {Esc(p.Warning)}");
             if (p.Declined is not null) console.MarkupLine($"      [red]Declined:[/] {Esc(p.Declined)}");

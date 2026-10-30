@@ -56,6 +56,7 @@ public static class Program
                 return usage ? 2 : 1;
             };
             c.AddCommand<ListCommand>("list").WithDescription("List sessions across agents.");
+            c.AddCommand<RenameCommand>("rename").WithDescription("Label a session (stored by this tool only; the agent's own data is untouched).");
             c.AddCommand<CleanCommand>("clean").WithDescription("Archive or delete stale sessions (dry run unless --apply).");
             c.AddCommand<ResumeCommand>("resume").WithDescription("Resume a session in its agent.");
             c.AddCommand<TransferCommand>("transfer").WithDescription("Hand a session over to another agent.");

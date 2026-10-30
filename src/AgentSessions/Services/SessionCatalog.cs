@@ -3,11 +3,16 @@ using AgentSessions.Model;
 
 namespace AgentSessions.Services;
 
-public record ListedSession(SessionInfo Info, bool IsStale, bool IsActive, AdapterCapabilities Capabilities);
+public record ListedSession(SessionInfo Info, bool IsStale, bool IsActive, AdapterCapabilities Capabilities, string? Label = null)
+{
+    /// <summary>What listings show: the user's label when set, else the agent's own title (untrusted: render via Esc).</summary>
+    public string DisplayTitle => Label ?? Info.Title;
+}
 
 public record SessionFilter(string? Agent = null, string? ProjectContains = null, TimeSpan? OlderThan = null);
 
-public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings settings, Func<DateTimeOffset> now)
+public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings settings, Func<DateTimeOffset> now,
+    ILabelSource? labels = null)
 {
     private readonly IReadOnlyList<ISessionAdapter> _adapters = adapters.ToList();
 
@@ -18,6 +23,7 @@ public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings s
         var activeWithin = TimeSpan.FromMinutes(settings.RecentActiveMinutes);
         var sessions = new List<ListedSession>();
         var skipped = new List<SkippedSession>();
+        var labelMap = labels?.Load() ?? new Dictionary<string, string>();   // once per List()
 
         foreach (var adapter in _adapters)
         {
@@ -36,7 +42,8 @@ public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings s
             foreach (var info in result.Sessions)
             {
                 var age = at - info.LastActivity;
-                var listed = new ListedSession(info, age > staleAfter, age <= activeWithin, adapter.Capabilities);
+                labelMap.TryGetValue(LabelStore.KeyOf(info.Agent, info.Id), out var label);
+                var listed = new ListedSession(info, age > staleAfter, age <= activeWithin, adapter.Capabilities, label);
                 if (!Matches(listed, filter, at)) continue;
                 sessions.Add(listed);
             }

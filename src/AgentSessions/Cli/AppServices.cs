@@ -14,6 +14,7 @@ public sealed class AppServices
     public IReadOnlyDictionary<string, ISessionAdapter> Adapters { get; }
     public Func<DateTimeOffset> Now { get; }
     public SessionCatalog Catalog { get; }
+    public LabelStore Labels { get; }
     public ArchiveStore Archive { get; }
     public CleanupService Cleanup { get; }
     public LaunchService Launcher { get; }
@@ -22,13 +23,14 @@ public sealed class AppServices
     public TransferService Transfer { get; }
 
     public AppServices(IEnumerable<ISessionAdapter> adapters, AppSettings settings, IProcessRunner runner,
-        IClipboard clipboard, Func<DateTimeOffset> now, string archiveRoot, IModelCaller? polishCaller = null,
-        string? homeDir = null)
+        IClipboard clipboard, Func<DateTimeOffset> now, string archiveRoot, LabelStore labels,
+        IModelCaller? polishCaller = null, string? homeDir = null)
     {
         Settings = settings;
         Now = now;
+        Labels = labels;   // required (no default path here) so tests can never reach the real data directory
         Adapters = adapters.ToDictionary(a => a.Name, a => a, StringComparer.OrdinalIgnoreCase);
-        Catalog = new SessionCatalog(Adapters.Values, settings, now);
+        Catalog = new SessionCatalog(Adapters.Values, settings, now, labels);
         Archive = new ArchiveStore(archiveRoot, homeDir);
         Cleanup = new CleanupService(Adapters, Archive, homeDir);
         Launcher = new LaunchService(runner, clipboard);
@@ -44,7 +46,8 @@ public sealed class AppServices
         var settings = new SettingsStore(Path.Combine(dataDir, "settings.json")).Load();
         ISessionAdapter[] adapters = [new ClaudeAdapter(homeDir), new CodexAdapter(homeDir), new CopilotAdapter(homeDir)];
         return new AppServices(adapters, settings, new ProcessRunner(), new SystemClipboard(),
-            () => DateTimeOffset.UtcNow, settings.ArchiveRoot ?? Path.Combine(dataDir, "archive"));
+            () => DateTimeOffset.UtcNow, settings.ArchiveRoot ?? Path.Combine(dataDir, "archive"),
+            new LabelStore(Path.Combine(dataDir, "labels.json")));
     }
 }
 

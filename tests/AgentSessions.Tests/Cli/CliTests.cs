@@ -47,7 +47,7 @@ public class CliTests : IDisposable
         var console = new TestConsole().Width(300);
         if (interactive) console.Interactive();
         var svc = new AppServices(adapters, settings ?? new AppSettings(), _runner, _clipboard, () => Now,
-            Path.Combine(_root, "archive"), caller, _root);
+            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), caller, _root);
         return (svc, console);
     }
 
@@ -540,6 +540,90 @@ public class CliTests : IDisposable
 
         Assert.Equal(0, code);
         Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void List_shows_label_instead_of_title()
+    {
+        var a = Session("claude", "c1", "Original title", 0);
+        var b = Session("claude", "c2", "Old original", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a, b])]);
+        svc.Labels.Set("claude", "c1", "[red]Mine[/]");
+        svc.Labels.Set("claude", "c2", "Stale one");
+
+        var code = Program.Run(["list"], console, svc);
+
+        Assert.Equal(0, code);
+        Assert.Contains("[red]Mine[/]", console.Output);
+        Assert.Contains("Stale one [stale]", console.Output);
+        Assert.DoesNotContain("Original title", console.Output);
+        Assert.DoesNotContain("Old original", console.Output);
+    }
+
+    [Fact]
+    public void rename_sets_and_clears_label()
+    {
+        var s = Session("claude", "abc123", "Original title", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Assert.Equal(0, Program.Run(["rename", "claude", "abc", "Fix", "the", "[b]parser[/]"], console, svc));   // id prefix
+        Assert.Equal("Fix the [b]parser[/]", svc.Labels.Load()["claude:abc123"]);
+        Assert.Contains("Fix the [b]parser[/]", console.Output);
+
+        var (svc2, console2) = Make([new FakeAdapter("claude", Full, [s])]);
+        Assert.Equal(0, Program.Run(["rename", "claude", "abc123", "--clear"], console2, svc2));
+        Assert.Empty(svc2.Labels.Load());
+        Assert.Contains("cleared", console2.Output);
+
+        svc2.Labels.Set("claude", "abc123", "again");
+        Assert.Equal(0, Program.Run(["rename", "claude", "abc123"], console2, svc2));   // no words clears
+        Assert.Empty(svc2.Labels.Load());
+
+        // Over-long labels are truncated and the output says so; labels that sanitise to blank clear.
+        Assert.Equal(0, Program.Run(["rename", "claude", "abc123", new string('z', 130)], console2, svc2));
+        Assert.Equal(120, svc2.Labels.Load()["claude:abc123"].Length);
+        Assert.Contains("truncated", console2.Output);
+        Assert.Equal(0, Program.Run(["rename", "claude", "abc123", "\u0001\u0002"], console2, svc2));
+        Assert.Empty(svc2.Labels.Load());
+        Assert.Contains("blank", console2.Output);
+    }
+
+    [Fact]
+    public void rename_unknown_id_exits_nonzero()
+    {
+        var a = Session("claude", "abc1", "A", 0);
+        var b = Session("claude", "abc2", "B", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a, b])]);
+
+        Assert.Equal(1, Program.Run(["rename", "claude", "nope", "x"], console, svc));
+        Assert.Contains("No claude session matches", console.Output);
+        Assert.Equal(1, Program.Run(["rename", "claude", "abc", "x"], console, svc));   // ambiguous
+        Assert.Contains("ambiguous", console.Output);
+        Assert.Equal(1, Program.Run(["rename", "bogus", "abc1", "x"], console, svc));
+        Assert.Empty(svc.Labels.Load());
+    }
+
+    [Fact]
+    public void Rename_writes_only_labels_json_and_never_touches_agent_stores()
+    {
+        var a = Session("claude", "c1", "A", 0);
+        var b = Session("codex", "x1", "B", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a]), new FakeAdapter("codex", Full, [b])]);
+        var dataDir = Path.Combine(_root, "data");
+        var before = Hashes(_root);
+
+        Assert.Equal(0, Program.Run(["rename", "claude", "c1", "Named"], console, svc));
+        Assert.Equal(0, Program.Run(["rename", "codex", "x1", "Named too"], console, svc));
+        Assert.Equal(0, Program.Run(["rename", "claude", "c1", "--clear"], console, svc));
+
+        var after = Hashes(_root);
+        foreach (var (file, hash) in before) Assert.Equal(hash, after[file]);          // agent stores byte-identical
+        var created = after.Keys.Except(before.Keys).ToList();
+        Assert.Equal([Path.Combine(dataDir, "labels.json")], created);                 // the only new file
+        Assert.Equal(["labels.json"], Directory.GetFiles(dataDir).Select(Path.GetFileName));
+
+        static Dictionary<string, string> Hashes(string dir) => Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+            .ToDictionary(f => f, f => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(f))));
     }
 
     [Fact]

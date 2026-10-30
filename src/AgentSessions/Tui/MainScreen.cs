@@ -91,6 +91,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
             case '/': AskFilter(); break;
             case 'r': Reload(); break;
             case 't': Transfer(); break;
+            case 'n': EditLabel(); break;
             case 'a': Cleanup(CleanupAction.Archive); break;
             case 'd': Cleanup(CleanupAction.Delete); break;
         }
@@ -143,7 +144,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         {
             var r = rows[i];
             var current = i == _model.Cursor;
-            var title = Esc(Truncate(r.Info.Title, titleMax)) + (r.IsStale ? " " + Esc("[stale]") : "");
+            var title = Esc(Truncate(r.DisplayTitle, titleMax)) + (r.IsStale ? " " + Esc("[stale]") : "");
             string[] cells =
             [
                 current ? ">" : " ",
@@ -158,7 +159,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         else if (rows.Count > VisibleRows) console.MarkupLine($"  ({_model.Cursor + 1}/{rows.Count})");
 
         console.MarkupLine($"{rows.Count} session(s), {_model.MarkedKeys.Count} marked, {_model.StaleCount} stale");
-        console.MarkupLine(Esc("[Enter] resume  [t] transfer to…  [a] archive  [d] delete"));
+        console.MarkupLine(Esc("[Enter] resume  [t] transfer to…  [n] label  [a] archive  [d] delete"));
         console.MarkupLine(Esc("[/] filter  [s] select stale  [space] mark  [r] reload  [q] quit"));
 
         static string Head(string s) => $"[underline]{s}[/]";
@@ -241,6 +242,58 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         Reload();
     }
 
+    private void EditLabel()
+    {
+        if (_model.Current is not { } cur) { _status.Add("Nothing to label."); return; }
+        var typed = ReadLine("Label (empty to clear):", cur.Label ?? "");
+        if (typed is null) { _status.Add("[yellow]No label was read; the label is unchanged.[/]"); return; }
+
+        var label = LabelStore.Sanitize(typed, out var truncated);
+        try { services.Labels.Set(cur.Info.Agent, cur.Info.Id, label); }
+        catch (Exception ex)
+        {
+            _status.Add($"[red]Could not save the label: {Esc(ex.Message)}[/]");
+            return;
+        }
+        _status.Add(label is null ? "Label cleared." : $"Label set: {Esc(label)}");
+        if (truncated) _status.Add($"[yellow]The label was truncated to {LabelStore.MaxLength} characters.[/]");
+        Reload();
+    }
+
+    /// <summary>
+    /// A one-line editor whose text starts as <paramref name="initial"/> (Spectre's TextPrompt cannot prefill).
+    /// Enter accepts, Esc cancels (returns the initial text unchanged), Backspace deletes. Null when keys cannot be read.
+    /// Typed-ahead keys are dropped first so only keys pressed after the prompt appears are used.
+    /// </summary>
+    private string? ReadLine(string prompt, string initial)
+    {
+        try { keys.DiscardPending(); } catch (Exception) { return null; }
+        var text = new System.Text.StringBuilder(StripControls(initial));
+        console.Markup(Esc(prompt) + " ");
+        console.Write(new Text(text.ToString()));
+        while (true)
+        {
+            ConsoleKeyInfo? k;
+            try { k = console.Input.ReadKey(intercept: true); }
+            catch (Exception) { return null; }
+            if (k is not { } key) return null;
+            if (key.Key == ConsoleKey.Enter || key.KeyChar is '\r' or '\n') { console.WriteLine(); return text.ToString(); }
+            if (key.Key == ConsoleKey.Escape) { console.WriteLine(); return initial; }
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (text.Length == 0) continue;
+                var drop = text.Length >= 2 && char.IsLowSurrogate(text[^1]) ? 2 : 1;
+                text.Length -= drop;
+                console.Write(new Text("\b \b"));
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                text.Append(key.KeyChar);
+                console.Write(new Text(key.KeyChar.ToString()));
+            }
+        }
+    }
+
     private void Transfer()
     {
         if (_model.Current is not { } cur) { _status.Add("Nothing to transfer."); return; }
@@ -294,7 +347,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         foreach (var p in plan.Take(MaxListedItems))
         {
             var i = p.Session.Info;
-            console.MarkupLine($"  {Esc(i.Agent)}:{Esc(i.Id)}  {Esc(i.Title)}  ({Size(i.SizeBytes)})");
+            console.MarkupLine($"  {Esc(i.Agent)}:{Esc(i.Id)}  {Esc(p.Session.DisplayTitle)}  ({Size(i.SizeBytes)})");
             foreach (var path in p.Paths.Take(3)) console.MarkupLine($"      {Esc(path)}");
             if (p.Paths.Count > 3) console.MarkupLine($"      ... and {p.Paths.Count - 3} more path(s)");
             if (p.Warning is not null) console.MarkupLine($"      [yellow]Warning:[/] {Esc(p.Warning)}");

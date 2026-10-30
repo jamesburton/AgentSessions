@@ -98,7 +98,7 @@ internal static class CliSupport
         if (matches.Count > 1)
         {
             console.MarkupLine($"[red]Id '{Esc(id)}' is ambiguous; it matches {matches.Count} {Esc(adapter.Name)} sessions:[/]");
-            foreach (var m in matches.Take(10)) console.MarkupLine($"  {Esc(m.Info.Id)}  {Esc(m.Info.Title)}");
+            foreach (var m in matches.Take(10)) console.MarkupLine($"  {Esc(m.Info.Id)}  {Esc(m.DisplayTitle)}");
             return null;
         }
         return (adapter, matches[0].Info);

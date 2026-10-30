@@ -88,7 +88,7 @@ public class MainScreenTests : IDisposable
         var console = new TestConsole().Width(width);
         if (interactive) console.Interactive();
         var svc = new AppServices(adapters, settings ?? new AppSettings(), _runner, new FakeClipboard(), () => Now,
-            Path.Combine(_root, "archive"), null, _root);
+            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), null, _root);
         return (svc, console);
     }
 
@@ -510,6 +510,69 @@ public class MainScreenTests : IDisposable
         Assert.Equal(0, code);
         Assert.True(File.Exists(s.StorePath));
         Assert.Contains("[boom]", _keys.Frames[1]);
+    }
+
+    [Fact]
+    public void Tui_n_key_sets_label_and_list_shows_it()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var b = Session("claude", "c2", "Other", 2);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a, b])]);
+        console.Input.PushTextWithEnter("[red]Release prep[/]");
+
+        var code = RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Equal(0, code);
+        Assert.Contains("Label (empty to clear):", _keys.Frames[1]);
+        Assert.Contains("[red]Release prep[/]", _keys.Frames[1]);                // result line, literal
+        var list = _keys.Frames[2];                                              // redraw after the pause
+        Assert.Contains("[red]Release prep[/]", list);
+        Assert.DoesNotContain("Original title", list);
+        Assert.Contains("Other", list);
+        Assert.Contains("[Enter] resume  [t] transfer to…  [n] label  [a] archive  [d] delete", list);
+        Assert.Equal("[red]Release prep[/]", svc.Labels.Load()["claude:c1"]);
+        Assert.True(File.Exists(a.StorePath));
+    }
+
+    [Fact]
+    public void Tui_n_prompt_is_prefilled_and_empty_input_clears()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        svc.Labels.Set("claude", "c1", "Old name");
+
+        // Enter keeps the prefilled label; backspaces edit it; erasing everything clears it.
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushText("X");
+        console.Input.PushKey(ConsoleKey.Enter);
+        RunScreen(svc, console, C('n'), P, C('n'), P, C('q'));
+
+        Assert.Contains("Old name", _keys.Frames[1]);
+        Assert.Equal("Old nameX", svc.Labels.Load()["claude:c1"]);
+
+        for (var i = 0; i < 9; i++) console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Enter);
+        RunScreen(svc, console, C('n'), P, C('q'));
+
+        Assert.Empty(svc.Labels.Load());
+        Assert.Contains("Original title", _keys.Frames[2]);
+    }
+
+    [Fact]
+    public void Labels_survive_reload()
+    {
+        var a = Session("claude", "c1", "Original title", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [a])]);
+        console.Input.PushTextWithEnter("Keep me");
+
+        RunScreen(svc, console, C('n'), P, C('r'), C('q'));
+
+        Assert.Contains("Keep me", _keys.Frames[3]);   // after the explicit reload
+        // A brand-new screen over the same store (a restart) shows it too.
+        var (svc2, console2) = Make([new FakeAdapter("claude", Full, [a])]);
+        RunScreen(svc2, console2, C('q'));
+        Assert.Contains("Keep me", _keys.Frames[0]);
+        Assert.DoesNotContain("Original title", _keys.Frames[0]);
     }
 
     private sealed class ThrowingOwnedPaths(string name, AdapterCapabilities caps, IEnumerable<SessionInfo> sessions) : ISessionAdapter

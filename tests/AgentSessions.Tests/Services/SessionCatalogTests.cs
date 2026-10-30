@@ -96,4 +96,26 @@ public class SessionCatalogTests
         Assert.Contains(new SkippedSession("/x", "bad"), skipped);
         Assert.Equal(2, skipped.Count);
     }
+
+    private sealed class Labels(Dictionary<string, string> d) : ILabelSource
+    {
+        public int Loads;
+        public IReadOnlyDictionary<string, string> Load() { Loads++; return d; }
+    }
+
+    [Fact]
+    public void Catalog_applies_label_and_keeps_original_title()
+    {
+        var a = new SessionInfo("Claude", "id1", "C:/p", "Original", Now, 1, "/s/1");
+        var b = new SessionInfo("Claude", "id2", "C:/p", "Other", Now.AddHours(-1), 1, "/s/2");
+        var labels = new Labels(new() { ["claude:id1"] = "Mine" });
+        var c = new SessionCatalog([new FakeAdapter("Claude", AdapterCapabilities.List, [a, b])], new AppSettings(), () => Now, labels);
+
+        var (sessions, _) = c.List();
+
+        Assert.Equal("Mine", sessions[0].Label);
+        Assert.Equal("Original", sessions[0].Info.Title);
+        Assert.Null(sessions[1].Label);
+        Assert.Equal(1, labels.Loads);   // once per List()
+    }
 }

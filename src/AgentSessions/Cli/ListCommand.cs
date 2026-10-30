@@ -39,7 +39,7 @@ public sealed class ListCommand(AppServices services, IAnsiConsole console) : Co
         foreach (var c in new[] { "AGENT", "ID", "PROJECT", "LAST ACTIVE", "SIZE", "TITLE" }) table.AddColumn(c);
         foreach (var r in rows)
         {
-            var title = Esc(r.Info.Title) + (r.IsStale ? " " + Esc("[stale]") : "");
+            var title = Esc(r.DisplayTitle) + (r.IsStale ? " " + Esc("[stale]") : "");
             table.AddRow(Esc(r.Info.Agent), Esc(r.Info.Id), Esc(r.Info.ProjectPath ?? "(unknown)"),
                 Age(now, r.Info.LastActivity), Size(r.Info.SizeBytes), title);
         }
