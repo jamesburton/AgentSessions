@@ -20,6 +20,10 @@ public sealed class HandoffPolisher(AppSettings settings, IModelCaller? caller)
             ? null
             : new CommandModelCaller(settings.PolishCommand, CommandModelCaller.DefaultTimeout));
 
+    /// <summary>
+    /// Returns the polished handoff, or the extracted one plus a Note when polish is off-path or fails.
+    /// The Note is for local display only (it may contain a stderr excerpt) and must never be written into the handoff file or logs.
+    /// </summary>
     public (string Content, string? Note) Apply(string extracted)
     {
         if (!settings.PolishEnabled) return (extracted, null);
@@ -36,7 +40,8 @@ public sealed class HandoffPolisher(AppSettings settings, IModelCaller? caller)
         if (string.IsNullOrWhiteSpace(polished))
             return (extracted, "Polish returned no text; using the unpolished handoff.");
 
-        if (SourceLines(extracted).Any(l => !polished.Contains(l, StringComparison.Ordinal)))
+        var polishedLines = polished.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToHashSet(StringComparer.Ordinal);
+        if (SourceLines(extracted).Any(l => !polishedLines.Contains(l)))
             return (extracted, "Polished text lost the source reference (the ## Source lines); using the unpolished handoff.");
 
         return (polished, null);
@@ -61,6 +66,10 @@ public sealed class HandoffPolisher(AppSettings settings, IModelCaller? caller)
 /// <summary>Runs a user-configured command: handoff Markdown on stdin, polished Markdown on stdout.</summary>
 public sealed class CommandModelCaller(string? command, TimeSpan timeout) : IModelCaller
 {
+    internal Action<Process>? OnStarted { get; init; }
+    internal int MaxStdoutChars { get; init; } = 4_000_000;
+    internal int MaxStderrChars { get; init; } = 64_000;
+
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(120);
 
     public string Polish(string handoffMarkdown)
@@ -79,29 +88,72 @@ public sealed class CommandModelCaller(string? command, TimeSpan timeout) : IMod
         psi.StandardErrorEncoding = Encoding.UTF8;
 
         using var p = Process.Start(psi) ?? throw new InvalidOperationException($"Could not start '{parts[0]}'.");
-        var stdout = p.StandardOutput.ReadToEndAsync();
-        var stderr = p.StandardError.ReadToEndAsync();
+        var tasks = new List<Task>();
         try
         {
-            p.StandardInput.Write(handoffMarkdown);
-            p.StandardInput.Close();
-        }
-        catch (IOException) { /* child exited without reading all input; exit code decides */ }
+            OnStarted?.Invoke(p);
+            var overflow = new string?[1];
+            // Everything below runs concurrently, so a child that never reads stdin cannot block the deadline.
+            var stdin = Task.Run(() =>
+            {
+                try { p.StandardInput.Write(handoffMarkdown); p.StandardInput.Close(); }
+                catch (IOException) { /* child exited without reading all input; exit code decides */ }
+                catch (ObjectDisposedException) { }
+            });
+            var stdout = Task.Run(() => ReadCapped(p, p.StandardOutput, MaxStdoutChars, "stdout", overflow));
+            var stderr = Task.Run(() => ReadCapped(p, p.StandardError, MaxStderrChars, "stderr", overflow));
+            tasks.AddRange([stdin, stdout, stderr]);
 
-        if (!p.WaitForExit(timeout))
-        {
-            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-            p.WaitForExit();
-            throw new TimeoutException($"polish command timed out after {timeout.TotalSeconds:0} seconds");
+            if (!p.WaitForExit(timeout))
+            {
+                KillTree(p);
+                throw new TimeoutException($"polish command timed out after {timeout.TotalSeconds:0} seconds");
+            }
+            // Process exited; give the pipe readers a bounded time (a grandchild could hold the pipes open).
+            if (!Task.WaitAll([stdout, stderr], TimeSpan.FromSeconds(10)))
+            {
+                KillTree(p);
+                throw new TimeoutException("polish command output did not close after the process exited");
+            }
+            if (overflow[0] is { } which)
+                throw new InvalidOperationException($"polish command {which} exceeded the size limit");
+            if (p.ExitCode != 0)
+            {
+                var err = stderr.Result.Trim();
+                if (err.Length > 200) err = err[..200];
+                throw new InvalidOperationException($"polish command exited with code {p.ExitCode}; stderr: {err}");
+            }
+            return stdout.Result;
         }
-        p.WaitForExit(); // flush async readers
-        if (p.ExitCode != 0)
+        finally
         {
-            var err = stderr.Result.Trim();
-            if (err.Length > 200) err = err[..200];
-            throw new InvalidOperationException($"polish command exited with code {p.ExitCode}: {err}");
+            KillTree(p);
+            try { Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5)); } catch { /* already reported or irrelevant */ }
         }
-        return stdout.Result;
+    }
+
+    private static void KillTree(Process p)
+    {
+        try { if (!p.HasExited) p.Kill(entireProcessTree: true); }
+        catch (Exception) { /* already gone or not killable; nothing more to do */ }
+    }
+
+    private static string ReadCapped(Process p, StreamReader reader, int max, string name, string?[] overflow)
+    {
+        var sb = new StringBuilder();
+        var buf = new char[8192];
+        int n;
+        while ((n = reader.Read(buf, 0, buf.Length)) > 0)
+        {
+            if (sb.Length + n > max)
+            {
+                overflow[0] = name;
+                KillTree(p);
+                return sb.ToString();
+            }
+            sb.Append(buf, 0, n);
+        }
+        return sb.ToString();
     }
 
     /// <summary>Splits on whitespace; double quotes group (and are removed); no shell expansion.</summary>
