@@ -190,20 +190,89 @@ public sealed class CleanupServiceTests : IDisposable
     }
 
     [Fact]
-    public void Archive_of_directory_with_exclusively_held_file_fails_and_leaves_original_identical()
+    public void Archive_of_directory_with_open_file_fails_without_attempting_a_copy_and_leaves_original_identical()
     {
         var tree = MakeTree("tree1");
-        var locked = Path.Combine(tree, "a", "one.txt");
+        var held = Path.Combine(tree, "a", "one.txt");
         var snap = TreeSnapshot(tree);
-        var arc = new ArchiveStore(ArchiveRoot, Home);
+        var copies = 0;
+        var arc = new ArchiveStore(ArchiveRoot, Home) { BeforeCopy = _ => copies++ };
         IOException ex;
-        using (new FileStream(locked, FileMode.Open, FileAccess.Write, FileShare.None))
+        // Readable by others (so a copy WOULD succeed) but not deletable/renamable: only the native move can fail.
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.Read))
             ex = Assert.ThrowsAny<IOException>(() => arc.Archive(Info("s1", tree), [tree]));
+        Assert.Equal(0, copies);
         Assert.Equal(snap, TreeSnapshot(tree));
         // State asserted: rolled back cleanly. No payload and no manifest are left in the archive location.
         var archiveDir = Path.Combine(ArchiveRoot, "claude", "s1");
-        Assert.False(Directory.Exists(archiveDir) && Directory.EnumerateFiles(archiveDir, "*", SearchOption.AllDirectories).Any());
+        Assert.False(Directory.Exists(archiveDir) && Directory.EnumerateFileSystemEntries(archiveDir, "*", SearchOption.AllDirectories).Any());
         Assert.Contains("originals are intact", ex.Message);
+        Assert.DoesNotContain("restored", ex.Message);
+    }
+
+    [Fact]
+    public void Non_device_native_move_failure_does_not_fall_back_to_copy()
+    {
+        var tree = MakeTree("tree1");
+        var single = Write("single.bin", "payload");
+        var snap = TreeSnapshot(tree);
+        var copies = 0;
+        var arc = new ArchiveStore(ArchiveRoot, Home)
+        {
+            BeforeCopy = _ => copies++,
+            NativeMove = (_, _) => throw new IOException("access denied", unchecked((int)0x80070005))
+        };
+        Assert.Throws<IOException>(() => arc.Archive(Info("s1", tree), [tree, single]));
+        Assert.Equal(0, copies);
+        Assert.Equal(snap, TreeSnapshot(tree));
+        Assert.Equal("payload", File.ReadAllText(single));
+        Assert.False(Directory.Exists(Path.Combine(ArchiveRoot, "claude", "s1")));
+    }
+
+    [Fact]
+    public void Native_move_reporting_not_same_device_does_fall_back_to_copy()
+    {
+        var tree = MakeTree("tree1");
+        var snap = TreeSnapshot(tree);
+        var copies = 0;
+        var arc = new ArchiveStore(ArchiveRoot, Home)
+        {
+            BeforeCopy = _ => copies++,
+            NativeMove = (_, _) => throw new IOException("not same device", unchecked((int)0x80070011))
+        };
+        var dir = arc.Archive(Info("s1", tree), [tree]);
+        Assert.Equal(1, copies);
+        Assert.False(Directory.Exists(tree));
+        arc.NativeMove = null;
+        arc.Restore(dir);
+        Assert.Equal(snap, TreeSnapshot(tree));
+    }
+
+    [Fact]
+    public void Single_file_delete_that_throws_after_the_source_is_gone_counts_as_success()
+    {
+        var f = Write("single.bin", "payload");
+        var arc = Forced(ArchiveRoot, Home, a => a.BeforeDeleteOriginal = p => { File.Delete(p); throw new IOException("late error"); });
+        var dir = arc.Archive(Info("s1", f), [f]);
+        Assert.False(File.Exists(f));
+        Assert.Equal(1, Directory.EnumerateFiles(dir, "single.bin", SearchOption.AllDirectories).Count());
+    }
+
+    [Fact]
+    public void Cleanup_after_failed_restore_deletes_only_what_the_copy_created()
+    {
+        var tree = MakeTree("tree1");
+        var dir = new ArchiveStore(ArchiveRoot, Home).Archive(Info("s1", tree), [tree]);
+        var foreign = Path.Combine(tree, "foreign.txt");
+        var arc = Forced(ArchiveRoot, Home, a => a.BeforeDeleteOriginal = _ =>
+        {
+            File.WriteAllText(foreign, "someone else's file");   // an agent recreated the location meanwhile
+            throw new IOException("simulated");
+        });
+        Assert.Throws<IOException>(() => arc.Restore(dir));
+        Assert.Equal("someone else's file", File.ReadAllText(foreign));
+        Assert.True(File.Exists(Path.Combine(dir, "manifest.json")));
+        Assert.Empty(Directory.EnumerateFiles(tree).Where(p => p != foreign));   // copied files gone, only the foreign one remains
     }
 
     [Fact]

@@ -33,6 +33,8 @@ public class ArchiveStore(string root, string? homeDir = null)
     internal Func<string, string, bool>? ForceNotSameDevice { get; set; }
     internal Action<string>? BeforeDeleteOriginal { get; set; }
     internal Action<string>? BeforeCopyBack { get; set; }
+    internal Action<string>? BeforeCopy { get; set; }
+    internal Action<string, string>? NativeMove { get; set; }   // replaces the native rename when set
 
     /// <summary>The original is partially removed and could not be restored; the full copy was kept.</summary>
     private sealed class CompromisedException(string message) : IOException(message);
@@ -77,7 +79,7 @@ public class ArchiveStore(string root, string? homeDir = null)
         var done = new List<(string Src, string Dst)>();
         try
         {
-            foreach (var m in moves) { MovePath(m.Src, m.Dst); done.Add(m); }
+            foreach (var m in moves) { MovePath(m.Src, m.Dst, "Archive"); done.Add(m); }
         }
         catch (CompromisedException ex)
         {
@@ -88,7 +90,7 @@ public class ArchiveStore(string root, string? homeDir = null)
         catch (Exception ex)
         {
             // MovePath only throws a non-Compromised exception when the failing item's original is intact.
-            var rollbackErrors = Rollback(done);
+            var rollbackErrors = Rollback(done, "Rollback");
             if (rollbackErrors.Count > 0)
                 throw new IOException($"Archive failed ({ex.Message}) and rollback was incomplete ({string.Join("; ", rollbackErrors)}). " +
                                       $"Nothing was deleted; the archive and manifest.json are kept at '{dir}' and list the original locations.", ex);
@@ -128,7 +130,7 @@ public class ArchiveStore(string root, string? homeDir = null)
         var done = new List<(string Src, string Dst)>();
         try
         {
-            foreach (var m in moves) { MovePath(m.Src, m.Dst); done.Add(m); }
+            foreach (var m in moves) { MovePath(m.Src, m.Dst, "Restore"); done.Add(m); }
         }
         catch (CompromisedException ex)
         {
@@ -137,7 +139,7 @@ public class ArchiveStore(string root, string? homeDir = null)
         }
         catch (Exception ex)
         {
-            var errs = Rollback(done);
+            var errs = Rollback(done, "Rollback");
             throw new IOException(errs.Count == 0
                 ? $"Restore failed and was rolled back; the archive is intact (manifest.json kept): {ex.Message}"
                 : $"Restore failed ({ex.Message}) and rollback was incomplete ({string.Join("; ", errs)}). The archive and manifest.json were kept at '{archivedDir}'.", ex);
@@ -147,12 +149,12 @@ public class ArchiveStore(string root, string? homeDir = null)
         TreeOps.RemoveEmptyDirs(archivedDir);   // removes the archive dir once empty; never deletes content
     }
 
-    private List<string> Rollback(List<(string Src, string Dst)> done)
+    private List<string> Rollback(List<(string Src, string Dst)> done, string op)
     {
         var errors = new List<string>();
         for (var i = done.Count - 1; i >= 0; i--)
         {
-            try { MovePath(done[i].Dst, done[i].Src); }
+            try { MovePath(done[i].Dst, done[i].Src, op); }
             catch (Exception e) { errors.Add($"'{done[i].Dst}' -> '{done[i].Src}': {e.Message}"); }
         }
         return errors;
@@ -208,7 +210,7 @@ public class ArchiveStore(string root, string? homeDir = null)
     /// Moves a file or directory (links are moved as links). Throws a non-Compromised exception only if the source is intact.
     /// Falls back to copy + verify + delete ONLY for ERROR_NOT_SAME_DEVICE or differing volume roots; any other failure propagates.
     /// </summary>
-    private void MovePath(string src, string dst)
+    private void MovePath(string src, string dst, string op)
     {
         var isDir = Directory.Exists(src);
         if (Directory.Exists(dst) || File.Exists(dst) || PathGuard.IsReparsePoint(dst))
@@ -221,12 +223,15 @@ public class ArchiveStore(string root, string? homeDir = null)
         {
             try
             {
-                if (isDir) Directory.Move(src, dst); else File.Move(src, dst);
+                if (NativeMove is not null) NativeMove(src, dst);
+                else if (isDir) Directory.Move(src, dst);
+                else File.Move(src, dst);
                 return;
             }
             catch (IOException ex) when (IsNotSameDevice(ex)) { /* fall back below */ }
         }
-        if (isDir) CopyVerifyDeleteDir(src, dst); else CopyVerifyDeleteFile(src, dst);
+        BeforeCopy?.Invoke(src);
+        if (isDir) CopyVerifyDeleteDir(src, dst, op); else CopyVerifyDeleteFile(src, dst);
     }
 
     private static string Hash(string path)
@@ -235,26 +240,22 @@ public class ArchiveStore(string root, string? homeDir = null)
         return Convert.ToHexString(SHA256.HashData(fs));
     }
 
-    private static void TryDeleteCopy(string dst)
-    {
-        try { if (Directory.Exists(dst) || File.Exists(dst)) TreeOps.DeleteSafely(dst); } catch { /* leftover is reported by the caller's cleanup check */ }
-    }
-
     private void CopyVerifyDeleteFile(string src, string dst)
     {
         if (PathGuard.IsReparsePoint(src)) throw new IOException($"Cannot move link across volumes: '{src}'. Original untouched.");
         var info = new FileInfo(src);
         var (len, mtime) = (info.Length, info.LastWriteTimeUtc);
+        var log = new TreeOps.CopyLog();
         try
         {
-            File.Copy(src, dst);
+            TreeOps.CopyFileNew(src, dst, log);
             if (new FileInfo(dst).Length != len || Hash(src) != Hash(dst))
                 throw new IOException($"Copy verification failed for '{src}'; original untouched.");
             var now = new FileInfo(src);
             if (now.Length != len || now.LastWriteTimeUtc != mtime)
                 throw new IOException($"'{src}' changed while it was being copied; original untouched.");
         }
-        catch { TryDeleteCopy(dst); throw; }
+        catch { log.Cleanup(); throw; }
 
         try
         {
@@ -262,10 +263,11 @@ public class ArchiveStore(string root, string? homeDir = null)
             if (File.GetAttributes(src).HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(src, FileAttributes.Normal);
             File.Delete(src);
         }
-        catch (Exception ex) when (File.Exists(src))
+        catch (Exception ex)
         {
-            // A single-file delete is atomic: the original is still whole, so drop the copy.
-            TryDeleteCopy(dst);
+            // A single-file delete is atomic. If the source is already gone, the file is verified in the destination: success.
+            if (!File.Exists(src)) return;
+            log.Cleanup();   // original is still whole, so drop only the copy this call created
             throw new IOException($"Could not remove the original '{src}' after copying; original left in place: {ex.Message}", ex);
         }
     }
@@ -286,14 +288,15 @@ public class ArchiveStore(string root, string? homeDir = null)
         return list;
     }
 
-    private void CopyVerifyDeleteDir(string src, string dst)
+    private void CopyVerifyDeleteDir(string src, string dst, string op)
     {
         if (PathGuard.IsReparsePoint(src)) throw new IOException($"Cannot move link across volumes: '{src}'. Original untouched.");
         List<Entry> snap;
+        var log = new TreeOps.CopyLog();
         try
         {
             snap = Snapshot(src);
-            TreeOps.CopyTree(src, dst);
+            TreeOps.CopyTree(src, dst, log);
             if (Snapshot(dst).Count != snap.Count) throw new IOException($"Copy verification failed for '{src}' (entry count); original untouched.");
             foreach (var e in snap)
             {
@@ -302,10 +305,10 @@ public class ArchiveStore(string root, string? homeDir = null)
                     throw new IOException($"Copy verification failed for '{Path.Combine(src, e.Rel)}'; original untouched.");
             }
         }
-        catch { TryDeleteCopy(dst); throw; }
+        catch { log.Cleanup(); throw; }
 
         try { DeleteOriginals(src, snap); return; }
-        catch (Exception deleteError) { RestoreOriginal(src, dst, snap, deleteError); }
+        catch (Exception deleteError) { RestoreOriginal(src, dst, snap, deleteError, log, op); }
     }
 
     private void DeleteOriginals(string src, List<Entry> snap)
@@ -326,7 +329,7 @@ public class ArchiveStore(string root, string? homeDir = null)
     }
 
     /// <summary>Delete phase failed: copy back what is missing (never overwriting), verify, then drop the copy. Always throws.</summary>
-    private void RestoreOriginal(string src, string dst, List<Entry> snap, Exception deleteError)
+    private void RestoreOriginal(string src, string dst, List<Entry> snap, Exception deleteError, TreeOps.CopyLog log, string op)
     {
         try
         {
@@ -348,12 +351,10 @@ public class ArchiveStore(string root, string? homeDir = null)
             throw new CompromisedException($"The original '{src}' is partially removed (delete error: {deleteError.Message}) and could not be restored " +
                                            $"({copyBackError.Message}). The full copy is kept at '{dst}'.");
         }
-        try { TreeOps.DeleteSafely(dst); }
-        catch (Exception ex)
-        {
-            throw new IOException($"Archive failed; originals restored and verified whole at '{src}' ({deleteError.Message}), " +
-                                  $"but the copy at '{dst}' could not be removed ({ex.Message}); it is kept.", deleteError);
-        }
-        throw new IOException($"Archive failed; originals restored and verified whole at '{src}': {deleteError.Message}", deleteError);
+        // Remove only the entries this copy created (never a recursive delete of a path someone else may have populated).
+        if (!log.Cleanup())
+            throw new IOException($"{op} failed; originals restored and verified whole at '{src}' ({deleteError.Message}), " +
+                                  $"but some copied files under '{dst}' could not be removed; they are kept.", deleteError);
+        throw new IOException($"{op} failed; originals restored and verified whole at '{src}': {deleteError.Message}", deleteError);
     }
 }

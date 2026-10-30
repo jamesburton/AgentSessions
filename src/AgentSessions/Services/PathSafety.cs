@@ -89,13 +89,58 @@ internal static class TreeOps
         return (files, dirs, bytes);
     }
 
-    public static void CopyTree(string src, string dst)
+    /// <summary>Records exactly the files and directories a copy created, so cleanup never touches anything else.</summary>
+    public sealed class CopyLog
     {
-        Directory.CreateDirectory(dst);
+        public List<string> Files { get; } = [];
+        public List<string> Dirs { get; } = [];
+
+        /// <summary>
+        /// Removes only what this copy created: files first, then directories only if empty. Never recursive.
+        /// Returns false if a created file could not be deleted.
+        /// </summary>
+        public bool Cleanup()
+        {
+            var ok = true;
+            for (var i = Files.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (!File.Exists(Files[i])) continue;
+                    if (File.GetAttributes(Files[i]).HasFlag(FileAttributes.ReadOnly)) File.SetAttributes(Files[i], FileAttributes.Normal);
+                    File.Delete(Files[i]);
+                }
+                catch { ok = false; }
+            }
+            for (var i = Dirs.Count - 1; i >= 0; i--)
+            {
+                try { if (Directory.Exists(Dirs[i])) Directory.Delete(Dirs[i], false); }
+                catch { /* non-empty (someone else's content) or in use: leave it */ }
+            }
+            return ok;
+        }
+    }
+
+    /// <summary>Copies one file to a path that must not exist (CreateNew), preserving mtime and attributes; logs the file once created.</summary>
+    public static void CopyFileNew(string src, string dst, CopyLog log)
+    {
+        using (var input = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var output = new FileStream(dst, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            log.Files.Add(dst);
+            input.CopyTo(output);
+        }
+        File.SetLastWriteTimeUtc(dst, File.GetLastWriteTimeUtc(src));
+        File.SetAttributes(dst, File.GetAttributes(src));
+    }
+
+    public static void CopyTree(string src, string dst, CopyLog log)
+    {
+        if (!Directory.Exists(dst)) { Directory.CreateDirectory(dst); log.Dirs.Add(dst); }
         foreach (var f in Directory.EnumerateFiles(src))
-            File.Copy(f, Path.Combine(dst, Path.GetFileName(f)));
+            CopyFileNew(f, Path.Combine(dst, Path.GetFileName(f)), log);
         foreach (var d in Directory.EnumerateDirectories(src))
-            CopyTree(d, Path.Combine(dst, Path.GetFileName(d)));
+            CopyTree(d, Path.Combine(dst, Path.GetFileName(d)), log);
     }
 
     /// <summary>Removes empty directories bottom-up; anything non-empty is left alone.</summary>
