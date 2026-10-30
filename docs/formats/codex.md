@@ -44,6 +44,17 @@ Blank lines and a truncated final line are possible while a session is being wri
 | tool calls | `function_call` (`name`), `custom_tool_call` (`name`) |
 | files touched | `apply_patch` `input` lines `*** Add File: <p>`, `*** Update File: <p>`, `*** Delete File: <p>`, `*** Move to: <p>`. Shell commands expose no structured file list. |
 
+### Legacy flat format
+
+Older Codex versions may write entries without the `payload` wrapper. These are not supported:
+such sessions list with null cwd and the `(no prompt)` title placeholder.
+
+### Discover scan limits
+
+The head scan stops after `JsonlReader.HeadScanBytes` (256 KB) even if cwd/title are not found
+(then ProjectPath is null and title is `(no prompt)`). The tail scan reads the last 64 KB; if that
+window holds no complete line (one huge final line) LastActivity falls back to the file mtime.
+
 ## Resume / launch
 
 - Resume: `codex resume <id>` run with working directory = project path.

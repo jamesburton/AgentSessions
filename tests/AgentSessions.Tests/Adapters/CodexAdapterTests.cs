@@ -7,7 +7,7 @@ namespace AgentSessions.Tests.Adapters;
 
 public class CodexAdapterTests
 {
-    private const string Id = "019cddfb-c816-7693-aad0-0a9439742456";
+    private const string Id = "00000000-0000-7000-8000-000000000001";
 
     private static string J(object o) => System.Text.Json.JsonSerializer.Serialize(o);
 
@@ -137,7 +137,7 @@ public class CodexAdapterTests
     public void Discover_includes_archived_sessions()
     {
         var home = SessionFixtures.TempHome();
-        var archId = "019cdc5b-cf33-7392-9e15-fb0ed437df80";
+        var archId = "00000000-0000-7000-8000-000000000002";
         var arch = Path.Combine(home, ".codex", "archived_sessions", $"rollout-2026-01-02T10-00-00-{archId}.jsonl");
         SessionFixtures.WriteLines(SessionPath(home), Meta("C:\\Dev\\proj"), UserMsg("active"));
         SessionFixtures.WriteLines(arch, Meta("C:\\Dev\\old"), UserMsg("archived"));
@@ -190,5 +190,60 @@ public class CodexAdapterTests
         Assert.Equal("first", first.Text);
         Assert.True(allocated < 5_000_000, $"allocated {allocated} bytes before first entry");
         Assert.Equal(20_001, adapter.ReadTranscript(info).Count());
+    }
+
+    [Fact]
+    public void Discover_final_line_larger_than_tail_window_uses_file_mtime()
+    {
+        var home = SessionFixtures.TempHome();
+        var path = SessionPath(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            w.WriteLine(Meta("C:\\Dev\\proj"));
+            w.WriteLine(UserMsg("hello"));
+            w.WriteLine(AgentMsg(new string('x', 100_000), "2026-01-01T10:05:00.000Z"));
+        }
+        var mtime = new DateTime(2026, 5, 5, 12, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, mtime);
+
+        var s = Assert.Single(new CodexAdapter(home).Discover().Sessions);
+        Assert.Equal(new DateTimeOffset(mtime), s.LastActivity);
+    }
+
+    [Fact]
+    public void Discover_large_file_without_prompt_or_cwd_is_bounded_and_uses_placeholders()
+    {
+        var home = SessionFixtures.TempHome();
+        var path = SessionPath(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var filler = new string('x', 1000);
+        using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            for (var i = 0; i < 20_000; i++) w.WriteLine(AgentMsg(filler));
+            w.WriteLine(AgentMsg("last", "2026-02-02T12:00:00.000Z"));
+        }
+        Assert.True(new FileInfo(path).Length > 19_000_000);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = new CodexAdapter(home).Discover();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var s = Assert.Single(result.Sessions);
+        Assert.Equal("(no prompt)", s.Title);
+        Assert.Null(s.ProjectPath);
+        Assert.Equal(DateTimeOffset.Parse("2026-02-02T12:00:00Z"), s.LastActivity);
+        Assert.True(allocated < 3_000_000, $"Discover allocated {allocated} bytes");
+    }
+
+    [Fact]
+    public void Discover_uses_turn_context_cwd_when_session_meta_has_none()
+    {
+        var home = SessionFixtures.TempHome();
+        SessionFixtures.WriteLines(SessionPath(home),
+            J(new { timestamp = "2026-01-01T10:00:00.000Z", type = "turn_context", payload = new { cwd = "C:\\Dev\\tc" } }),
+            UserMsg("hi"));
+        var s = Assert.Single(new CodexAdapter(home).Discover().Sessions);
+        Assert.Equal("C:\\Dev\\tc", s.ProjectPath);
     }
 }

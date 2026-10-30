@@ -42,11 +42,11 @@ public partial class CodexAdapter(string homeDir) : ISessionAdapter
         DateTimeOffset? newest = null;
 
         // Head scan: stop as soon as cwd and title are known.
-        foreach (var e in JsonlReader.Read(file))
+        foreach (var e in JsonlReader.Read(file, JsonlReader.HeadScanBytes))
         {
             if (ParseTs(e) is { } ts && (newest is null || ts > newest)) newest = ts;
             var type = TryString(e, "type");
-            if (cwd is null && type == "session_meta" && Payload(e) is { } meta &&
+            if (cwd is null && type is ("session_meta" or "turn_context") && Payload(e) is { } meta &&
                 TryString(meta, "cwd") is { Length: > 0 } c) cwd = c;
             if (title is null && type == "event_msg" && Payload(e) is { } p &&
                 TryString(p, "type") == "user_message" && TryString(p, "message") is { } msg &&
@@ -54,8 +54,7 @@ public partial class CodexAdapter(string homeDir) : ISessionAdapter
             if (cwd is not null && title is not null) break;
         }
         // Tail scan: newest timestamp lives near the end of the file.
-        foreach (var e in JsonlReader.ReadTail(file))
-            if (ParseTs(e) is { } ts && (newest is null || ts > newest)) newest = ts;
+        if (JsonlReader.TailNewest(file, ParseTs) is { } tail && (newest is null || tail > newest)) newest = tail;
 
         return new SessionInfo(Name, IdFromFile(file), cwd, title ?? "(no prompt)",
             newest ?? new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero), fi.Length, file);

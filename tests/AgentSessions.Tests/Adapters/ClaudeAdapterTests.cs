@@ -215,4 +215,47 @@ public class ClaudeAdapterTests
         Assert.Equal("Edit", e[1].ToolName);
         Assert.Equal(new[] { "C:\\Dev\\proj\\a.cs" }, e[1].FilesTouched);
     }
+
+    [Fact]
+    public void Discover_final_line_larger_than_tail_window_uses_file_mtime()
+    {
+        var home = SessionFixtures.TempHome();
+        var path = SessionPath(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            w.WriteLine(UserLine("hello", "C:\\Dev\\proj"));
+            w.WriteLine(AssistantText(new string('x', 100_000), "2026-01-01T10:05:00.000Z"));
+        }
+        var mtime = new DateTime(2026, 5, 5, 12, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, mtime);
+
+        var s = Assert.Single(new ClaudeAdapter(home).Discover().Sessions);
+        Assert.Equal(new DateTimeOffset(mtime), s.LastActivity);
+    }
+
+    [Fact]
+    public void Discover_large_file_without_prompt_or_cwd_is_bounded_and_uses_placeholders()
+    {
+        var home = SessionFixtures.TempHome();
+        var path = SessionPath(home);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var filler = new string('x', 1000);
+        using (var w = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            for (var i = 0; i < 20_000; i++) w.WriteLine(AssistantText(filler));
+            w.WriteLine(AssistantText("last", "2026-02-02T12:00:00.000Z"));
+        }
+        Assert.True(new FileInfo(path).Length > 19_000_000);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = new ClaudeAdapter(home).Discover();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var s = Assert.Single(result.Sessions);
+        Assert.Equal("(no prompt)", s.Title);
+        Assert.Null(s.ProjectPath);
+        Assert.Equal(DateTimeOffset.Parse("2026-02-02T12:00:00Z"), s.LastActivity);
+        Assert.True(allocated < 3_000_000, $"Discover allocated {allocated} bytes");
+    }
 }
