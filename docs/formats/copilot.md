@@ -14,6 +14,8 @@ no content recorded).
   A folder with neither `workspace.yaml` nor `events.jsonl` is reported as skipped.
 - `<home>/.copilot/session-store.db` (+ `-wal`, `-shm`): shared SQLite store, see the safety verdict.
 
+> Single-sample caveat: the layout notes below come from one machine and one session folder (plus the shared store). In particular the folder holds `rewind-snapshots/` here whereas the original survey named `rewind-file-snapshots/`, and checkpoint file shapes were seen on only one machine; treat both as single-sample observations.
+
 ## workspace.yaml
 
 Flat `key: value` lines. Keys: `id`, `cwd`, `git_root`, `branch`, `name`, `user_named`, `summary_count`,
@@ -52,10 +54,14 @@ Blank lines and a truncated final line are possible while a session is being wri
 |---|---|
 | session id | folder name |
 | project path | `workspace.yaml` `cwd` (fallback `git_root`, then `session.start.data.context.cwd` in the head scan) |
-| title | newest `checkpoints/NNN-*.md` (highest name): first `# ` heading if any, else first line of `<overview>`; else first `user.message` `data.content`; else `(no prompt)` |
-| last activity | max `timestamp` in the tail of `events.jsonl`; else `workspace.yaml` `updated_at`; else folder mtime |
+| title | newest `checkpoints/NNN-*.md` (highest name): first `# ` heading that appears before the first `<section>` tag, else first line of `<overview>` (a heading inside `<history>` etc. is content, not a title); else first `user.message` `data.content`; else `(no prompt)` |
+| last activity | `JsonlReader.TailNewest` over `events.jsonl` (max `timestamp` in the last 64 KB; returns the events file mtime when the final line exceeds the window). Only if `events.jsonl` is absent (or yields nothing, e.g. empty) does it fall back to `workspace.yaml` `updated_at`, then the folder mtime |
 | user / assistant text | `user.message`, `assistant.message` |
 | tool calls | `tool.execution_start.toolName` (files from `arguments.path`), output from `tool.execution_complete.result.content` |
+
+`SizeBytes` is an approximation, not a recursive folder size: `events.jsonl` + `workspace.yaml` + the top-level `checkpoints/*.md` lengths (a missing or locked file counts as 0). `rewind-snapshots/`, `files/`, `research/` can hold thousands of files and are never enumerated.
+
+All text files (workspace.yaml, checkpoints) are read with `FileShare.ReadWrite | Delete` so a live CLI holding them open for write never breaks Discover.
 
 Discover limits: head scan stops after `JsonlReader.HeadScanBytes`; tail scan reads the last 64 KB, with
 file-mtime fallback when the final line exceeds the window. `index.md` is not used for titles.

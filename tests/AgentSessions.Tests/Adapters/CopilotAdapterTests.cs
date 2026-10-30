@@ -86,6 +86,56 @@ public class CopilotAdapterTests
     }
 
     [Fact]
+    public void Discover_lists_session_while_agent_holds_workspace_yaml_and_checkpoint_open_for_write()
+    {
+        var home = SessionFixtures.TempHome();
+        Yaml(home, "C:\\Dev\\live");
+        SessionFixtures.WriteLines(Events(home), Start(), UserMsg("first prompt"));
+        Checkpoint(home, "001-a.md", "# Live heading\n");
+        using var y = new FileStream(Path.Combine(SessionDir(home), "workspace.yaml"), FileMode.Open,
+            FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        using var c = new FileStream(Path.Combine(SessionDir(home), "checkpoints", "001-a.md"), FileMode.Open,
+            FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+
+        var result = new CopilotAdapter(home).Discover();
+
+        var s = Assert.Single(result.Sessions);
+        Assert.Equal("C:\\Dev\\live", s.ProjectPath);
+        Assert.Equal("Live heading", s.Title);
+        Assert.Empty(result.Skipped);
+    }
+
+    [Fact]
+    public void Discover_does_not_enumerate_snapshot_trees()
+    {
+        var home = SessionFixtures.TempHome();
+        Yaml(home, "C:\\Dev\\proj");
+        SessionFixtures.WriteLines(Events(home), Start(), UserMsg("hi"));
+        var snaps = Path.Combine(SessionDir(home), "rewind-snapshots");
+        Directory.CreateDirectory(snaps);
+        for (var i = 0; i < 3000; i++) File.WriteAllText(Path.Combine(snaps, $"snap-{i:D5}.txt"), "x");
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = new CopilotAdapter(home).Discover();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var s = Assert.Single(result.Sessions);
+        Assert.Equal(new FileInfo(Events(home)).Length +
+                     new FileInfo(Path.Combine(SessionDir(home), "workspace.yaml")).Length, s.SizeBytes);
+        Assert.True(allocated < 300_000, $"Discover allocated {allocated} bytes");
+    }
+
+    [Fact]
+    public void Checkpoint_heading_after_a_section_tag_does_not_override_overview()
+    {
+        var home = SessionFixtures.TempHome();
+        Yaml(home, "C:\\Dev\\proj");
+        SessionFixtures.WriteLines(Events(home), Start(), UserMsg("first prompt"));
+        Checkpoint(home, "001-a.md", "<overview>\nOverview wins\n</overview>\n<history>\n# Inner heading\n</history>\n");
+        Assert.Equal("Overview wins", Assert.Single(new CopilotAdapter(home).Discover().Sessions).Title);
+    }
+
+    [Fact]
     public void Discover_recovers_project_path_from_workspace_yaml()
     {
         var home = SessionFixtures.TempHome();

@@ -11,6 +11,18 @@ public static class JsonlReader
     public const int TailBytes = 64 * 1024;
 
     /// <summary>
+    /// Streams the lines of a text file, opened with full sharing so a live agent that holds the
+    /// file open for write never causes a sharing violation.
+    /// </summary>
+    public static IEnumerable<string> ReadTextLines(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(fs);
+        string? line;
+        while ((line = reader.ReadLine()) is not null) yield return line;
+    }
+
+    /// <summary>
     /// Streams JSON objects from a JSONL file one line at a time. Blank and unparseable
     /// lines (including a truncated final line) are skipped. The yielded element is only
     /// valid until the next iteration step; Clone() it to keep it. When maxBytes is given,

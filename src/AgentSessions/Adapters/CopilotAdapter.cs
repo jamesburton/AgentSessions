@@ -130,12 +130,15 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
 
         string? overview = null;
         var inOverview = false;
-        foreach (var raw in File.ReadLines(newest).Take(MaxCheckpointLines))
+        var sawSection = false;
+        foreach (var raw in JsonlReader.ReadTextLines(newest).Take(MaxCheckpointLines))
         {
             var line = raw.Trim();
-            if (line.StartsWith('#') && line.TrimStart('#').Trim() is { Length: > 0 } h) return Title(h);
-            if (line == "<overview>") inOverview = true;
+            // A heading only counts before the first <section> tag; later ones (inside <history> etc.) are content.
+            if (!sawSection && line.StartsWith('#') && line.TrimStart('#').Trim() is { Length: > 0 } h) return Title(h);
+            if (line == "<overview>") { inOverview = true; sawSection = true; }
             else if (line == "</overview>") inOverview = false;
+            else if (line.Length > 2 && line[0] == '<' && line[1] != '/' && line[^1] == '>') sawSection = true;
             else if (inOverview && overview is null && line.Length > 0) overview = Title(line);
         }
         return overview;
@@ -144,7 +147,7 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
     private static Dictionary<string, string> ReadYamlKeys(string path)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var line in File.ReadLines(path).Take(100))
+        foreach (var line in JsonlReader.ReadTextLines(path).Take(100))
         {
             if (line.Length == 0 || char.IsWhiteSpace(line[0]) || line[0] == '#') continue;
             var i = line.IndexOf(':');
@@ -159,9 +162,21 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
 
     private static long FolderSize(string dir)
     {
-        long total = 0;
-        foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories)) total += f.Length;
+        // Bounded approximation: never recurse (snapshots/files/research can hold thousands of files).
+        long total = Len(Path.Combine(dir, "events.jsonl")) + Len(Path.Combine(dir, "workspace.yaml"));
+        try
+        {
+            var cp = Path.Combine(dir, "checkpoints");
+            if (Directory.Exists(cp))
+                foreach (var f in Directory.EnumerateFiles(cp, "*.md")) total += Len(f);
+        }
+        catch (Exception) { /* unreadable checkpoints count as 0 */ }
         return total;
+
+        static long Len(string f)
+        {
+            try { return new FileInfo(f).Length; } catch (Exception) { return 0; }
+        }
     }
 
     private static JsonElement? Data(JsonElement e) =>
