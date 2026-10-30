@@ -31,7 +31,12 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
         public override ValidationResult Validate()
         {
             if (Archive && Delete) return ValidationResult.Error("Choose either --archive or --delete, not both.");
-            if (OlderThan is < 0) return ValidationResult.Error("--older-than must not be negative.");
+            if (OlderThan is < 0 or > CleanupSelection.MaxDays)
+                return ValidationResult.Error($"--older-than must be between 0 and {CleanupSelection.MaxDays} days.");
+            if (Ids is not null && CleanupSelection.ParseIds(Ids).Length == 0)
+                return ValidationResult.Error("--ids needs at least one agent:id pair.");
+            if (Ids is not null && OlderThan is not null)
+                return ValidationResult.Error("--ids and --older-than cannot be combined; use one or the other.");
             return ValidationResult.Success();
         }
     }
@@ -40,37 +45,16 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
     {
         var action = s.Delete ? CleanupAction.Delete : CleanupAction.Archive;
 
-        List<ListedSession> selected;
-        if (s.Ids is not null)
+        var all = services.Catalog.List().Sessions;
+        var selection = CleanupSelection.Select(all, s.Ids is null ? null : CleanupSelection.ParseIds(s.Ids),
+            s.OlderThan, services.Now());
+        if (selection.UnknownIds.Count > 0)
         {
-            var all = services.Catalog.List().Sessions;
-            selected = [];
-            var bad = new List<string>();
-            foreach (var raw in s.Ids.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var parts = raw.Split(':', 2);
-                var hit = parts.Length == 2
-                    ? all.FirstOrDefault(x => string.Equals(x.Info.Agent, parts[0], StringComparison.OrdinalIgnoreCase) && x.Info.Id == parts[1])
-                    : null;
-                if (hit is null) bad.Add(raw);
-                else if (!selected.Contains(hit)) selected.Add(hit);
-            }
-            if (bad.Count > 0)
-            {
-                console.MarkupLine($"[red]No session found for: {Esc(string.Join(", ", bad))} (expected agent:id, exact id). Nothing was changed.[/]");
-                return Error;
-            }
-        }
-        else if (s.OlderThan is { } days)
-        {
-            selected = services.Catalog.List(new SessionFilter(OlderThan: TimeSpan.FromDays(days))).Sessions.ToList();
-        }
-        else
-        {
-            selected = services.Catalog.List().Sessions.Where(x => x.IsStale).ToList();
+            console.MarkupLine($"[red]No session found for: {Esc(string.Join(", ", selection.UnknownIds))} (expected agent:id, exact id). Nothing was changed.[/]");
+            return Error;
         }
 
-        var plan = services.Cleanup.Plan(selected, action);
+        var plan = services.Cleanup.Plan(selection.Selected, action);
         var verb = action == CleanupAction.Archive ? "archive" : "delete";
         PrintPlan(plan, verb);
 
@@ -87,10 +71,22 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
             return plan.Count > 0 ? Error : Ok;
         }
 
-        if (!s.Yes && !Confirm(console, $"Proceed? [y/N] ({verb} {actionable.Count} session(s))"))
+        if (!s.Yes)
         {
-            console.MarkupLine("Cancelled; nothing was changed.");
-            return Ok;
+            var warned = actionable.Count(p => p.Warning is not null);
+            var what = action == CleanupAction.Delete ? "PERMANENTLY delete" : "archive";
+            var question = $"About to {what} {actionable.Count} session(s)"
+                + (warned > 0 ? $", {warned} with active-session warnings" : "")
+                + ". Proceed? [y/N]";
+            switch (Confirm(console, question))
+            {
+                case ConfirmResult.Refused:
+                    console.MarkupLine("[red]Refused: no interactive confirmation is possible here, so nothing was changed. Pass --yes to proceed without a prompt.[/]");
+                    return Error;
+                case ConfirmResult.No:
+                    console.MarkupLine("Cancelled; nothing was changed.");
+                    return Ok;
+            }
         }
 
         var result = services.Cleanup.Apply(actionable);

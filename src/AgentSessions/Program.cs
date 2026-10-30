@@ -19,7 +19,19 @@ public static class Program
             return 0;
         }
 
-        return Run(args, AnsiConsole.Console, AppServices.CreateDefault());
+        return RunMain(args, AnsiConsole.Console, () => AppServices.CreateDefault());
+    }
+
+    internal static int RunMain(string[] args, IAnsiConsole console, Func<AppServices> create)
+    {
+        AppServices services;
+        try { services = create(); }
+        catch (Exception ex)
+        {
+            console.MarkupLine($"[red]AgentSessions could not start: {CliSupport.Esc(ex.Message)}[/]");
+            return 1;
+        }
+        return Run(args, console, services);
     }
 
     internal static int Run(string[] args, IAnsiConsole console, AppServices services)

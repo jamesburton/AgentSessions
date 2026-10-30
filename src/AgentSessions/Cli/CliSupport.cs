@@ -4,12 +4,24 @@ using Spectre.Console;
 
 namespace AgentSessions.Cli;
 
+internal enum ConfirmResult { Yes, No, Refused }
+
 internal static class CliSupport
 {
     public const int Ok = 0, Error = 1, Usage = 2;
 
-    /// <summary>Every untrusted string (titles, paths, messages) must go through this before being printed as markup.</summary>
-    public static string Esc(string? s) => Markup.Escape(s ?? "");
+    /// <summary>
+    /// Every untrusted string (titles, paths, messages) must go through this before being printed as markup:
+    /// control characters (C0, DEL, C1) are dropped so session content cannot inject terminal escape sequences,
+    /// then markup is escaped.
+    /// </summary>
+    public static string Esc(string? s) => Markup.Escape(StripControls(s ?? ""));
+
+    public static string StripControls(string s)
+    {
+        if (!s.Any(char.IsControl)) return s;
+        return string.Concat(s.Where(c => !char.IsControl(c)));
+    }
 
     public static string Age(DateTimeOffset now, DateTimeOffset then)
     {
@@ -33,23 +45,22 @@ internal static class CliSupport
 
     public static bool IsInteractive(IAnsiConsole console) => console.Profile.Capabilities.Interactive;
 
-    /// <summary>Default No; non-interactive input or any read failure means No.</summary>
-    public static bool Confirm(IAnsiConsole console, string question)
+    /// <summary>
+    /// Yes/No is the user's answer at a real prompt (default No). Refused means no answer could be asked or read
+    /// (non-interactive input, or the prompt failed): the caller must treat that as an error, not a choice.
+    /// </summary>
+    public static ConfirmResult Confirm(IAnsiConsole console, string question)
     {
-        if (!IsInteractive(console))
-        {
-            console.MarkupLine("[yellow]Input is not interactive; not proceeding (pass --yes to skip the prompt).[/]");
-            return false;
-        }
+        if (!IsInteractive(console)) return ConfirmResult.Refused;
         try
         {
-            var answer = console.Prompt(new TextPrompt<string>(Markup.Escape(question) + " ").AllowEmpty());
-            return answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase)
-                   || answer.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase);
+            var answer = console.Prompt(new TextPrompt<string>(Markup.Escape(question) + " ").AllowEmpty()).Trim();
+            return answer.Equals("y", StringComparison.OrdinalIgnoreCase) || answer.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                ? ConfirmResult.Yes : ConfirmResult.No;
         }
         catch (Exception)
         {
-            return false;
+            return ConfirmResult.Refused;
         }
     }
 

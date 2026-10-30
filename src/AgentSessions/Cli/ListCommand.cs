@@ -21,6 +21,11 @@ public sealed class ListCommand(AppServices services, IAnsiConsole console) : Co
 
         [CommandOption("--stale")] [Description("Only stale sessions (older than the stale-days setting).")]
         public bool Stale { get; init; }
+
+        public override ValidationResult Validate() =>
+            OlderThan is < 0 or > CleanupSelection.MaxDays
+                ? ValidationResult.Error($"--older-than must be between 0 and {CleanupSelection.MaxDays} days.")
+                : ValidationResult.Success();
     }
 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)

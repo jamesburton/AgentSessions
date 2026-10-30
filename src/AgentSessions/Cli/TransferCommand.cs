@@ -34,6 +34,12 @@ public sealed class TransferCommand(AppServices services, IAnsiConsole console) 
             return Error;
         }
 
+        if (string.Equals(source.Name, target.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            console.MarkupLine($"[red]Source and target are both {Esc(source.Name)}. To continue a session in the same agent use: agentsessions resume {Esc(source.Name)} {Esc(session.Id)}[/]");
+            return Error;
+        }
+
         var r = services.Transfer.Transfer(source, session, target, s.Polish, FolderPrompt(console));
         if (r.HandoffPath.Length > 0) console.MarkupLine($"Handoff: {Esc(r.HandoffPath)}");
         if (r.BackupPath is not null) console.MarkupLine($"Previous handoff backed up to: {Esc(r.BackupPath)}");

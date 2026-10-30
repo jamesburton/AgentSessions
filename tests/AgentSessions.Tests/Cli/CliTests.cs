@@ -200,14 +200,211 @@ public class CliTests : IDisposable
     }
 
     [Fact]
+    public void testconsole_is_non_interactive_by_default()
+    {
+        Assert.False(new TestConsole().Profile.Capabilities.Interactive);
+    }
+
+    [Fact]
     public void clean_apply_non_interactive_without_yes_changes_nothing()
     {
         var s = Session("claude", "c1", "Old", 90);
         var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+        console.Profile.Capabilities.Interactive = false;
+        console.Input.PushTextWithEnter("y");   // must not be read: the IsInteractive check refuses first
 
-        Program.Run(["clean", "--apply"], console, svc);
+        var code = Program.Run(["clean", "--apply"], console, svc);
 
+        Assert.Equal(1, code);
         Assert.True(File.Exists(s.StorePath));
+        Assert.Contains("--yes", console.Output);
+    }
+
+    [Fact]
+    public void clean_apply_unreadable_prompt_refuses_with_exit_1()
+    {
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], interactive: true);   // no input queued
+
+        var code = Program.Run(["clean", "--apply"], console, svc);
+
+        Assert.Equal(1, code);
+        Assert.True(File.Exists(s.StorePath));
+        Assert.Contains("--yes", console.Output);
+    }
+
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("-1")]
+    [InlineData("36501")]
+    [InlineData("99999999999")]
+    public void clean_rejects_bad_older_than_with_usage_error(string value)
+    {
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Assert.Equal(2, Program.Run(["clean", "--older-than", value, "--apply", "--yes"], console, svc));
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void list_rejects_absurd_older_than_with_usage_error()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
+        Assert.Equal(2, Program.Run(["list", "--older-than", "36501"], console, svc));
+    }
+
+    [Fact]
+    public void clean_accepts_max_older_than()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
+        Assert.Equal(0, Program.Run(["clean", "--older-than", "36500"], console, svc));
+    }
+
+    [Theory]
+    [InlineData(",")]
+    [InlineData(" , ,")]
+    public void clean_rejects_ids_with_only_separators(string ids)
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
+        Assert.Equal(2, Program.Run(["clean", "--ids", ids], console, svc));
+    }
+
+    [Fact]
+    public void clean_rejects_ids_together_with_older_than()
+    {
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Assert.Equal(2, Program.Run(["clean", "--ids", "claude:c1", "--older-than", "5", "--apply", "--yes"], console, svc));
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void clean_prompt_states_action_count_and_active_warnings()
+    {
+        var s = Session("claude", "c1", "Fresh", 0);   // active (recent)
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], interactive: true);
+        console.Input.PushTextWithEnter("n");
+
+        Program.Run(["clean", "--ids", "claude:c1", "--apply"], console, svc);
+
+        Assert.Contains("archive 1 session(s)", console.Output);
+        Assert.Contains("1 with active-session warnings", console.Output);
+        Assert.Contains("Proceed? [y/N]", console.Output);
+        Assert.DoesNotContain("PERMANENTLY", console.Output);
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void clean_delete_prompt_says_permanently_delete()
+    {
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], interactive: true);
+        console.Input.PushTextWithEnter("n");
+
+        Program.Run(["clean", "--delete", "--apply"], console, svc);
+
+        Assert.Contains("PERMANENTLY delete 1 session(s)", console.Output);
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void clean_delete_apply_yes_deletes_owned_path_and_prints_done()
+    {
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        var code = Program.Run(["clean", "--delete", "--apply", "--yes"], console, svc);
+
+        Assert.Equal(0, code);
+        Assert.False(File.Exists(s.StorePath));
+        Assert.False(Directory.Exists(Path.Combine(_root, "archive")));
+        Assert.Contains("Done", console.Output);
+    }
+
+    [Fact]
+    public void list_strips_terminal_escape_sequences_from_titles()
+    {
+        var s = Session("claude", "c1", "a\u001b[31mb\u001b]0;pwn\u0007c\u009bd\u007fe", 0);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Program.Run(["list"], console, svc);
+
+        Assert.DoesNotContain(console.Output, c => c == '\u001b');
+        Assert.DoesNotContain(console.Output, c => c == '\u0007');
+        Assert.DoesNotContain(console.Output, c => c == '\u009b');
+        Assert.DoesNotContain(console.Output, c => c == '\u007f');
+        Assert.Contains("c", console.Output);
+    }
+
+    [Fact]
+    public void clean_plan_strips_terminal_escape_sequences()
+    {
+        var s = Session("claude", "c1", "x\u001b[2Jy", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        Program.Run(["clean"], console, svc);
+
+        Assert.DoesNotContain(console.Output, c => c == 0x1b);
+    }
+
+    [Fact]
+    public void transfer_to_same_agent_is_refused_with_resume_hint()
+    {
+        var s = Session("claude", "c1", "Work", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        var code = Program.Run(["transfer", "claude", "c1", "--to", "claude"], console, svc);
+
+        Assert.Equal(1, code);
+        Assert.Contains("resume", console.Output);
+        Assert.Empty(_runner.Runs);
+        Assert.False(File.Exists(Path.Combine(Project, ".docs", "handoff.md")));
+    }
+
+    [Fact]
+    public void transfer_polish_with_polish_disabled_writes_unpolished_and_says_so()
+    {
+        var s = Session("claude", "c1", "Work", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s]), new FakeAdapter("codex", Full, [])],
+            new AppSettings(PolishEnabled: false), new ThrowingCaller());
+
+        var code = Program.Run(["transfer", "claude", "c1", "--to", "codex", "--polish"], console, svc);
+
+        Assert.Equal(0, code);
+        Assert.Contains("polish is not enabled", console.Output);
+        Assert.True(File.Exists(Path.Combine(Project, ".docs", "handoff.md")));
+        Assert.DoesNotContain("SECRET-STDERR", console.Output);
+        Assert.Single(_runner.Runs);
+    }
+
+    [Fact]
+    public void startup_failure_prints_clean_message_and_exits_1()
+    {
+        var console = new TestConsole().Width(300);
+
+        var code = Program.RunMain(["list"], console, () => throw new InvalidOperationException("settings [bad] corrupt"));
+
+        Assert.Equal(1, code);
+        Assert.Contains("settings [bad] corrupt", console.Output);
+        Assert.DoesNotContain("   at ", console.Output);
+    }
+
+    [Fact]
+    public void cleanup_selection_unknown_ids_are_reported_and_empty_ids_select_nothing()
+    {
+        var info = Session("claude", "c1", "Old", 90);
+        var all = new List<ListedSession> { new(info, true, false, Full) };
+
+        var bad = CleanupSelection.Select(all, ["claude:c1", "claude:zz"], null, Now);
+        Assert.Equal(["claude:zz"], bad.UnknownIds);
+
+        var none = CleanupSelection.Select(all, [], null, Now);
+        Assert.Empty(none.Selected);
+        Assert.Empty(none.UnknownIds);
+
+        Assert.Equal(["claude:c1", "x:y"], CleanupSelection.ParseIds(" claude:c1 , ,x:y"));
     }
 
     [Fact]
