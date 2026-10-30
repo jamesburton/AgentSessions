@@ -15,6 +15,9 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
     private readonly List<string> _status = [];   // markup lines, already escaped
     private MainScreenModel _model = null!;
 
+    /// <summary>Test seam: replaces <c>CleanupService.Apply</c>.</summary>
+    internal Func<IEnumerable<CleanupPlanItem>, CleanupResult>? ApplyOverride { get; init; }
+
     public int Run()
     {
         if (!IsInteractive(console))
@@ -33,7 +36,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         while (true)
         {
             try { Render(); }
-            catch (Exception ex) { _status.Add($"[red]Display error: {Esc(ex.Message)}[/]"); }
+            catch (Exception ex) { console.MarkupLine($"[red]Display error: {Esc(ex.Message)}[/]"); }
 
             ConsoleKeyInfo key;
             try { key = keys.ReadKey(); }
@@ -51,6 +54,15 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
             catch (Exception ex)
             {
                 _status.Add($"[red]Error: {Esc(ex.Message)}[/]");
+            }
+
+            // Anything the user must read is printed below what is on screen and waits for a key,
+            // because the next Render() clears the screen (and scrollback).
+            if (_status.Count > 0)
+            {
+                foreach (var line in _status) console.MarkupLine(line);
+                _status.Clear();
+                Pause();
             }
         }
     }
@@ -101,30 +113,42 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
 
     // ---- rendering ----
 
+    /// <summary>
+    /// Redraws the whole screen. Clear() also erases the terminal scrollback (ESC[3J) BY DESIGN: the list is a
+    /// full-screen view. Therefore anything the user must read is printed and followed by <see cref="Pause"/>
+    /// before the next Render.
+    /// </summary>
     private void Render()
     {
         console.Clear();
         var rows = _model.Rows;
         var now = services.Now();
 
-        console.MarkupLine($"[bold]agentsessions[/]   filter: {Esc(DescribeFilter(_model.Filter))}"
-            + $"   {rows.Count} session(s), {_model.MarkedKeys.Count} marked, {_model.StaleCount} stale");
+        console.MarkupLine($"[bold]agentsessions[/]   filter: {Esc(Truncate(DescribeFilter(_model.Filter), 60))}"
+            );
 
         var table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumn("").AddColumn("").AddColumn("AGENT").AddColumn("PROJECT").AddColumn("LAST ACTIVE").AddColumn("SIZE").AddColumn("TITLE");
         table.AddRow(Head(""), Head(""), Head("AGENT"), Head("PROJECT"), Head("LAST ACTIVE"), Head("SIZE"), Head("TITLE"));
 
+        // Cap long cells to the console width so rows never wrap and the window arithmetic holds.
+        // Truncate the plain text first, then escape, so a cut never lands inside an escaped sequence.
         var first = Math.Clamp(_model.Cursor - VisibleRows / 2, 0, Math.Max(0, rows.Count - VisibleRows));
+        var shown = rows.Skip(first).Take(VisibleRows).ToList();
+        var agentW = Math.Max(5, shown.Select(r => r.Info.Agent.Length).DefaultIfEmpty(0).Max());
+        var projW = Math.Max(7, shown.Select(r => Truncate(ProjectName(r.Info.ProjectPath), MaxProjectWidth).Length).DefaultIfEmpty(0).Max());
+        // 2 narrow columns + 7 columns of padding, plus age/size columns and room for the " [stale]" tag.
+        var titleMax = Math.Max(8, ConsoleWidth - (16 + agentW + projW + 11 + 9 + 8 + 2));
         for (var i = first; i < Math.Min(rows.Count, first + VisibleRows); i++)
         {
             var r = rows[i];
             var current = i == _model.Cursor;
-            var title = Esc(r.Info.Title) + (r.IsStale ? " " + Esc("[stale]") : "");
+            var title = Esc(Truncate(r.Info.Title, titleMax)) + (r.IsStale ? " " + Esc("[stale]") : "");
             string[] cells =
             [
                 current ? ">" : " ",
                 _model.MarkedKeys.Contains(MainScreenModel.KeyOf(r)) ? "*" : " ",
-                Esc(r.Info.Agent), Esc(ProjectName(r.Info.ProjectPath)), Age(now, r.Info.LastActivity),
+                Esc(r.Info.Agent), Esc(Truncate(ProjectName(r.Info.ProjectPath), MaxProjectWidth)), Age(now, r.Info.LastActivity),
                 Size(r.Info.SizeBytes), title
             ];
             table.AddRow(current ? cells.Select(c => $"[bold]{c}[/]").ToArray() : cells);
@@ -133,9 +157,9 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         if (rows.Count == 0) console.MarkupLine("  (no sessions)");
         else if (rows.Count > VisibleRows) console.MarkupLine($"  ({_model.Cursor + 1}/{rows.Count})");
 
+        console.MarkupLine($"{rows.Count} session(s), {_model.MarkedKeys.Count} marked, {_model.StaleCount} stale");
         console.MarkupLine(Esc("[Enter] resume  [t] transfer to…  [a] archive  [d] delete"));
         console.MarkupLine(Esc("[/] filter  [s] select stale  [space] mark  [r] reload  [q] quit"));
-        foreach (var line in _status) console.MarkupLine(line);
 
         static string Head(string s) => $"[underline]{s}[/]";
     }
@@ -144,6 +168,26 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         $"{(f.Agent is null ? "all agents" : "agent " + f.Agent)} · "
         + $"{(f.ProjectContains is null ? "all projects" : "project " + f.ProjectContains)} · "
         + $"{(f.OlderThan is { } o ? $"older than {(int)o.TotalDays}d" : "any age")}";
+
+    private const int MaxProjectWidth = 24;
+
+    private int ConsoleWidth
+    {
+        get
+        {
+            try { return Math.Max(40, console.Profile.Width); } catch { return 80; }
+        }
+    }
+
+    /// <summary>Plain-text truncation (control characters removed first) with an ellipsis; escape AFTER calling this.</summary>
+    private static string Truncate(string? text, int max)
+    {
+        var plain = StripControls(text ?? "");
+        if (plain.Length <= max) return plain;
+        var cut = Math.Max(0, max - 1);
+        if (cut > 0 && char.IsHighSurrogate(plain[cut - 1])) cut--;   // never split a surrogate pair
+        return plain[..cut] + "…";
+    }
 
     private static string ProjectName(string? path)
     {
@@ -165,7 +209,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         }
         catch (Exception) { _status.Add("[yellow]Could not read a filter; keeping the previous one.[/]"); return; }
 
-        if (!FilterParser.TryParse(answer, out var filter, out var error))
+        if (!FilterParser.TryParse(answer, out var filter, out var error, out var note))
         {
             _status.Add($"[red]Invalid filter: {Esc(error)} Keeping the previous filter.[/]");
             return;
@@ -176,6 +220,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
             return;
         }
         _model.SetFilter(filter);
+        if (note is not null) _status.Add($"[yellow]{Esc(note)}[/]");
     }
 
     private void Resume()
@@ -224,7 +269,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
 
         var polish = false;
         if (services.Settings.PolishEnabled)
-            polish = Confirm(console, "Polish the handoff with the configured model? [y/N]") == ConfirmResult.Yes;
+            polish = ConfirmKey("Polish the handoff with the configured model? [y/N]") == ConfirmResult.Yes;
 
         var r = services.Transfer.Transfer(source, cur.Info, target, polish, FolderPrompt(console));
         if (r.HandoffPath.Length > 0) _status.Add($"Handoff: {Esc(r.HandoffPath)}");
@@ -233,6 +278,8 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         Reload();
     }
 
+    private const int MaxListedItems = 20;
+
     private void Cleanup(CleanupAction action)
     {
         var targets = _model.Targets;
@@ -240,15 +287,20 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
 
         var plan = services.Cleanup.Plan(targets, action);
         var verb = action == CleanupAction.Archive ? "archive" : "delete";
-        console.MarkupLine($"Plan: {verb} {plan.Count} session(s).");
-        foreach (var p in plan)
+        var warnedAll = plan.Count(p => p.Warning is not null);
+        var declinedAll = plan.Count(p => p.Declined is not null);
+        console.MarkupLine($"Plan: {verb} {plan.Count} session(s) ({warnedAll} with warnings, {declinedAll} declined).");
+        // Very large plans are summarised so the confirmation prompt below stays on screen.
+        foreach (var p in plan.Take(MaxListedItems))
         {
             var i = p.Session.Info;
             console.MarkupLine($"  {Esc(i.Agent)}:{Esc(i.Id)}  {Esc(i.Title)}  ({Size(i.SizeBytes)})");
-            foreach (var path in p.Paths) console.MarkupLine($"      {Esc(path)}");
+            foreach (var path in p.Paths.Take(3)) console.MarkupLine($"      {Esc(path)}");
+            if (p.Paths.Count > 3) console.MarkupLine($"      ... and {p.Paths.Count - 3} more path(s)");
             if (p.Warning is not null) console.MarkupLine($"      [yellow]Warning:[/] {Esc(p.Warning)}");
             if (p.Declined is not null) console.MarkupLine($"      [red]Declined:[/] {Esc(p.Declined)}");
         }
+        if (plan.Count > MaxListedItems) console.MarkupLine($"  ... and {plan.Count - MaxListedItems} more");
 
         var actionable = plan.Where(p => p.Declined is null).ToList();
         if (actionable.Count == 0)
@@ -260,10 +312,10 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         var what = action == CleanupAction.Delete ? "PERMANENTLY delete" : "archive";
         var warned = actionable.Count(p => p.Warning is not null);
         var question = $"About to {what} {actionable.Count} session(s)"
-            + (warned > 0 ? $", {warned} with active-session warnings" : "") + ". Proceed? [y/N]";
+            + (warned > 0 ? $", {warned} with active-session warnings" : "") + ". Proceed? [y/N] (y confirms; any other key cancels)";
 
-        // The only route to Apply: an explicit "yes" at a real prompt. Anything else is No.
-        switch (Confirm(console, question))
+        // The only route to Apply: an explicit "y" pressed after the plan was shown. Anything else is No.
+        switch (ConfirmKey(question))
         {
             case ConfirmResult.Yes:
                 break;
@@ -275,14 +327,53 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
                 return;
         }
 
-        var result = services.Cleanup.Apply(actionable);
-        foreach (var d in result.Done)
-            _status.Add($"[green]Done[/] {Esc(d.Session.Info.Agent)}:{Esc(d.Session.Info.Id)}");
-        foreach (var f in result.Failed)
-            _status.Add($"[red]Failed[/] {Esc(f.Item.Session.Info.Agent)}:{Esc(f.Item.Session.Info.Id)}: {Esc(f.Error)}");
-        _status.Add($"{result.Done.Count} done, {result.Failed.Count} failed, {plan.Count - actionable.Count} declined.");
-        _model.ClearMarks();
-        Reload();
+        try
+        {
+            var result = (ApplyOverride ?? services.Cleanup.Apply)(actionable);
+            foreach (var d in result.Done.Take(MaxListedItems))
+                _status.Add($"[green]Done[/] {Esc(d.Session.Info.Agent)}:{Esc(d.Session.Info.Id)}");
+            if (result.Done.Count > MaxListedItems) _status.Add($"... and {result.Done.Count - MaxListedItems} more done");
+            foreach (var f in result.Failed.Take(MaxListedItems))
+                _status.Add($"[red]Failed[/] {Esc(f.Item.Session.Info.Agent)}:{Esc(f.Item.Session.Info.Id)}: {Esc(f.Error)}");
+            if (result.Failed.Count > MaxListedItems) _status.Add($"[red]... and {result.Failed.Count - MaxListedItems} more failed[/]");
+            _status.Add($"{result.Done.Count} done, {result.Failed.Count} failed, {plan.Count - actionable.Count} declined.");
+        }
+        catch (Exception ex)
+        {
+            _status.Add($"[red]Cleanup failed unexpectedly: {Esc(ex.Message)}. Some sessions may or may not have been changed; the list is being reloaded.[/]");
+        }
+        finally
+        {
+            _model.ClearMarks();
+            Reload();
+        }
+    }
+
+    /// <summary>
+    /// Confirmation by a single key read through the key source. Pending (typed-ahead) keys are discarded AFTER the
+    /// plan is on screen, so only a key pressed in answer to the question can confirm. Only 'y' means yes.
+    /// </summary>
+    private ConfirmResult ConfirmKey(string question)
+    {
+        try { keys.DiscardPending(); } catch (Exception) { return ConfirmResult.Refused; }
+        console.MarkupLine(Markup.Escape(question));
+        try
+        {
+            var k = keys.ReadKey();
+            return k.KeyChar is 'y' or 'Y' ? ConfirmResult.Yes : ConfirmResult.No;
+        }
+        catch (Exception) { return ConfirmResult.Refused; }
+    }
+
+    private void Pause()
+    {
+        try
+        {
+            keys.DiscardPending();
+            console.MarkupLine("[grey]Press any key to continue...[/]");
+            keys.ReadKey();
+        }
+        catch (Exception) { /* the main loop's next read reports an unreadable keyboard */ }
     }
 
     private void Report(bool ok, string? message)

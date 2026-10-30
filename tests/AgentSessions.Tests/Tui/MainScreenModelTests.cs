@@ -112,6 +112,20 @@ public class MainScreenModelTests
         Assert.Equal(days is { } d ? TimeSpan.FromDays(d) : null, f.OlderThan);
     }
 
+    [Fact]
+    public void FilterParser_reports_repeated_tokens_and_uses_the_last()
+    {
+        Assert.True(FilterParser.TryParse("agent:claude agent:codex older:1 older:2 foo bar", out var f, out _, out var note));
+        Assert.Equal("codex", f.Agent);
+        Assert.Equal(TimeSpan.FromDays(2), f.OlderThan);
+        Assert.Equal("bar", f.ProjectContains);
+        Assert.Contains("only the last", note);
+        Assert.Contains("agent", note);
+
+        Assert.True(FilterParser.TryParse("agent:claude foo", out _, out _, out var none));
+        Assert.Null(none);
+    }
+
     [Theory]
     [InlineData("older:abc")]
     [InlineData("older:-1")]

@@ -96,12 +96,17 @@ public static class FilterParser
     /// Space-separated tokens: <c>agent:NAME</c>, <c>project:TEXT</c>, <c>older:DAYS</c> (0..36500) or a bare word
     /// (project substring). Empty input clears the filter. On failure <paramref name="error"/> says why.
     /// </summary>
-    public static bool TryParse(string? input, out SessionFilter filter, out string? error)
+    public static bool TryParse(string? input, out SessionFilter filter, out string? error) =>
+        TryParse(input, out filter, out error, out _);
+
+    public static bool TryParse(string? input, out SessionFilter filter, out string? error, out string? note)
     {
+        note = null;
         filter = new SessionFilter();
         error = null;
         string? agent = null, project = null;
         TimeSpan? older = null;
+        var repeated = new List<string>();
 
         foreach (var token in (input ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -112,10 +117,12 @@ public static class FilterParser
             {
                 case "agent":
                     if (value.Length == 0) { error = "agent: needs a name, e.g. agent:claude."; return false; }
+                    if (agent is not null) repeated.Add("agent");
                     agent = value;
                     break;
                 case "project":
                     if (value.Length == 0) { error = "project: needs text, e.g. project:myapp."; return false; }
+                    if (project is not null) repeated.Add("project");
                     project = value;
                     break;
                 case "older":
@@ -125,15 +132,19 @@ public static class FilterParser
                         error = $"older: needs a whole number of days between 0 and {CleanupSelection.MaxDays}.";
                         return false;
                     }
+                    if (older is not null) repeated.Add("older");
                     older = TimeSpan.FromDays(days);
                     break;
                 default:
+                    if (project is not null) repeated.Add("project");
                     project = token;   // bare word (or unknown prefix such as a Windows drive path)
                     break;
             }
         }
 
         filter = new SessionFilter(agent, project, older);
+        if (repeated.Count > 0)
+            note = $"Repeated {string.Join(", ", repeated.Distinct())} filter: only the last value of each is used.";
         return true;
     }
 }
