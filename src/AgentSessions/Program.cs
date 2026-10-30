@@ -36,8 +36,13 @@ public static class Program
 
     internal static int Run(string[] args, IAnsiConsole console, AppServices services)
     {
-        // TODO(Task 14): with no arguments, start the TUI here instead of printing help.
-        if (args.Length == 0) args = ["--help"];
+        if (args.Length == 0)
+        {
+            // The TUI is the primary interface; without a terminal fall back to the command help.
+            if (CliSupport.IsInteractive(console))
+                return new Tui.MainScreen(console, services, new Tui.ConsoleKeySource()).Run();
+            args = ["--help"];
+        }
 
         var app = new CommandApp(new ServicesRegistrar(services, console));
         app.Configure(c =>

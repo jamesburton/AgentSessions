@@ -36,8 +36,9 @@ public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings s
             foreach (var info in result.Sessions)
             {
                 var age = at - info.LastActivity;
-                if (!Matches(filter, info, age)) continue;
-                sessions.Add(new ListedSession(info, age > staleAfter, age <= activeWithin, adapter.Capabilities));
+                var listed = new ListedSession(info, age > staleAfter, age <= activeWithin, adapter.Capabilities);
+                if (!Matches(listed, filter, at)) continue;
+                sessions.Add(listed);
             }
         }
 
@@ -49,9 +50,12 @@ public class SessionCatalog(IEnumerable<ISessionAdapter> adapters, AppSettings s
         return (ordered, skipped);
     }
 
-    private static bool Matches(SessionFilter? f, SessionInfo info, TimeSpan age)
+    /// <summary>The one filter predicate, shared by <see cref="List"/> and the TUI model.</summary>
+    public static bool Matches(ListedSession session, SessionFilter? f, DateTimeOffset now)
     {
         if (f is null) return true;
+        var info = session.Info;
+        var age = now - info.LastActivity;
         if (f.Agent is not null && !string.Equals(f.Agent, info.Agent, StringComparison.OrdinalIgnoreCase)) return false;
         if (f.ProjectContains is not null &&
             (info.ProjectPath is null || !info.ProjectPath.Contains(f.ProjectContains, StringComparison.OrdinalIgnoreCase))) return false;
