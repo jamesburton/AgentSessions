@@ -233,6 +233,19 @@ public class CodexAdapterTests
     }
 
     [Fact]
+    public void Patch_file_paths_keep_trailing_punctuation_in_both_patch_forms()
+    {
+        const string real = "*** Begin Patch\n*** Update File: C:\\Dev\\proj\\Foo (1).cs\n@@\n-a\n+b\n*** End Patch";
+        const string cell = "await tools.apply_patch(\"*** Begin Patch\\n*** Add File: C:\\\\Dev\\\\proj\\\\data,v2;\\n+x\\n*** End Patch\");";
+        var e = Transcript(
+            Ri(new { type = "custom_tool_call", name = "apply_patch", call_id = "a", input = real }),
+            Ri(new { type = "custom_tool_call", name = "exec", call_id = "b", input = cell }));
+
+        Assert.Equal(new[] { "C:\\Dev\\proj\\Foo (1).cs" }, e[0].FilesTouched);
+        Assert.Equal(new[] { "C:\\Dev\\proj\\data,v2;" }, e[1].FilesTouched);
+    }
+
+    [Fact]
     public void ReadTranscript_summarises_apply_patch_custom_calls()
     {
         var e = Transcript(Patch("C:\\Dev\\proj\\a.cs"));

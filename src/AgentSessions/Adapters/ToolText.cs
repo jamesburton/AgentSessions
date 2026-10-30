@@ -92,7 +92,9 @@ internal static partial class ToolText
         var files = new List<string>();
         foreach (Match m in PatchFileRegex().Matches(body))
         {
-            var p = m.Groups[2].Value.TrimEnd('"', '\'', '`', ')', ';', ',');
+            // Taken verbatim: after unescaping, each file line ends at a real newline (the literal's closing quote is on
+            // the "*** End Patch" line, which never matches), and real paths can end in ')', ',' or ';'.
+            var p = m.Groups[2].Value;
             if (p.Length > 0 && !files.Contains(p)) files.Add(p);
         }
         return files;
