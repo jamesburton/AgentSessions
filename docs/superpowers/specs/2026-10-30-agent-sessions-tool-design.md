@@ -162,6 +162,15 @@ library, which the user left to the builder, and the handoff-size cap, whose exa
 remain the builder's to tune. Archive home: the tool's own data folder, preserving each
 session's original relative path. `handoff.md` backup: a timestamped sibling file.
 
+## Amendment 2026-10-30 (user request during the build): session labels
+
+The user asked, "if it is easy", for an option to rename sessions so they can be recognised
+before opening, deferrable if non-trivial. Decision (author's call, confirmed with the user in
+chat): implement **tool-owned labels** (`labels.json` in the tool's data directory, keyed by
+`agent:id`), shown in place of the title in list/TUI/CLI, set via `rename` (CLI) and `n` (TUI).
+Labels never modify an agent's own session store (anti-goal: losing information). Renaming
+inside each agent's own store is explicitly out of scope. See plan Task 16.
+
 ## Open items
 
 - Confirm `agy` = Google Antigravity.

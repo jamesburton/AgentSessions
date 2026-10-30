@@ -281,6 +281,27 @@ docs/formats/                     claude.md, codex.md, copilot.md (schema notes 
 
 ---
 
+### Task 16: Session labels (user amendment, executed BEFORE Task 15)
+
+The user asked (2026-10-30, mid-build) for the ability to name/label sessions so they can be recognised before opening. Decision: labels are **tool-owned**, stored in `labels.json` in the tool's data directory keyed by `agent:id`. They NEVER modify any agent's own session store (anti-goal: losing information). A label replaces the title in listings; the agent's own title is unchanged.
+
+**Files:**
+- Create: `src/AgentSessions/Services/LabelStore.cs`, `src/AgentSessions/Cli/RenameCommand.cs`
+- Modify: `src/AgentSessions/Services/SessionCatalog.cs` (apply labels), `src/AgentSessions/Cli/AppServices.cs` (compose the store), `src/AgentSessions/Cli/ListCommand.cs` (show the label), `src/AgentSessions/Tui/MainScreen.cs` (key `n`), `src/AgentSessions/Program.cs` (register `rename`)
+- Test: `tests/AgentSessions.Tests/Services/LabelStoreTests.cs`, additions to the catalog, CLI and TUI tests
+
+**Interfaces:**
+- Produces: `interface ILabelSource { IReadOnlyDictionary<string,string> Load(); }`; `class LabelStore(string path) : ILabelSource` with `Load()` (corrupt or missing file => empty, never throws), `void Set(string agent, string id, string? label)` (null/blank removes; key is `agent:id`, agent lowercased) and `static string? Sanitize(string? label)` (trim, strip control characters, collapse newlines/tabs to spaces, max 120 chars, blank => null). `Set` writes atomically (temp file + replace) and, if the existing file is unreadable/corrupt, first copies it to `labels.corrupt-<yyyyMMddTHHmmss>.json` instead of discarding it. `ListedSession` gains an optional trailing `string? Label = null`. `SessionCatalog(...)` gains an optional trailing `ILabelSource? labels = null` and fills `Label`. Display rule everywhere (list table, TUI): show `Label` when set, else `Info.Title`; the label is untrusted text: render via `CliSupport.Esc`.
+- CLI: `rename <agent> <id> [label...]` (unique id prefix allowed like `resume`; omitted label or `--clear` removes the label; unknown/ambiguous id => exit 1; label over 120 chars is truncated with a message). TUI: key `n` on the current row opens a text prompt "Label (empty to clear):" prefilled with the current label; the list reloads and shows it; footer help gains `[n] label`.
+
+- [ ] **Step 1: Write the failing tests** (names): `LabelStore_roundtrips_and_normalises_key`, `Set_blank_removes_label`, `Sanitize_strips_controls_and_caps_length`, `Corrupt_file_loads_empty_and_Set_preserves_a_copy_before_writing`, `Set_never_leaves_a_truncated_file` (temp+replace; no stray temp), `Catalog_applies_label_and_keeps_original_title`, `List_shows_label_instead_of_title`, `rename_sets_and_clears_label`, `rename_unknown_id_exits_nonzero`, `Tui_n_key_sets_label_and_list_shows_it`, `Labels_survive_reload`, `Rename_writes_only_labels_json_and_never_touches_agent_stores` (assert the agent store files are byte-identical and no other file was created).
+- [ ] **Step 2:** Run; expected FAIL (types missing).
+- [ ] **Step 3: Implement** as specified (YAGNI: no label search, no colour, no label history).
+- [ ] **Step 4:** Run the covering tests, then the full suite; expected PASS.
+- [ ] **Step 5: Commit** `feat: session labels`
+
+---
+
 ## Self-review notes
 
 - Spec coverage: list (7, 13, 14), resume (11, 13), cleanup archive/delete/dry-run/stale/manual (8, 13, 14), transfer with handoff, backup and link, launch, clipboard fallback (9-11, 13), polish opt-in with fallback (12), TUI flat list (14), Copilot test-then-decline (6), fail-soft adapters (4-7), project-folder ask-then-refuse (11), active sessions warn-but-allow (7, 8, 14), archive in tool data folder preserving relative paths (8), `dnx` packaging (1, 15).
