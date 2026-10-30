@@ -131,10 +131,158 @@ public sealed class CleanupServiceTests : IDisposable
         Assert.Equal("s1", manifest.Id);
         Assert.Equal(string.Join("|", new[] { f, dirPath, missing }), string.Join("|", manifest.Entries.Select(e => e.OriginalPath)));
         Assert.Equal("missing", manifest.Entries[2].Kind);
-        var archivedFile = Path.GetFullPath(Path.Combine(dir, manifest.Entries[0].ArchivedPath!));
-        Assert.Equal("hello", File.ReadAllText(archivedFile));
-        Assert.EndsWith(Path.Combine("proj", "a.jsonl"), archivedFile);
-        Assert.True(File.Exists(Path.Combine(dir, manifest.Entries[1].ArchivedPath!, "sub", "x.txt")));
+        Assert.Equal(["file", "directory", "missing"], manifest.Entries.Select(e => e.Kind));
+        Assert.Null(manifest.Entries[2].ArchivedPath);
+        // Exact layout: files/<Drive>/<path under the volume>, with '/' separators in the manifest.
+        string Expected(string p)
+        {
+            var root = Path.GetPathRoot(p)!;
+            return "files/" + char.ToUpperInvariant(root[0]) + "/" + p[root.Length..].Replace('\\', '/');
+        }
+        Assert.Equal(Expected(f), manifest.Entries[0].ArchivedPath);
+        Assert.Equal(Expected(dirPath), manifest.Entries[1].ArchivedPath);
+        Assert.Equal("hello", File.ReadAllText(Path.Combine(dir, Expected(f))));
+        Assert.Equal("x", File.ReadAllText(Path.Combine(dir, Expected(dirPath), "sub", "x.txt")));
+        // Nothing but manifest.json and files/ at the top of the archive.
+        Assert.Equal(["files", "manifest.json"], Directory.GetFileSystemEntries(dir).Select(Path.GetFileName).Order());
+    }
+
+    private string MakeTree(string name)
+    {
+        var root = Path.Combine(Store, name);
+        Directory.CreateDirectory(Path.Combine(root, "a", "b"));
+        Directory.CreateDirectory(Path.Combine(root, "empty"));
+        File.WriteAllBytes(Path.Combine(root, "top.bin"), [0, 1, 2, 255, 254]);
+        File.WriteAllText(Path.Combine(root, "a", "one.txt"), "one");
+        File.WriteAllBytes(Path.Combine(root, "a", "b", "two.bin"), Enumerable.Range(0, 5000).Select(i => (byte)(i * 7)).ToArray());
+        File.WriteAllText(Path.Combine(root, "a", "b", "three.txt"), "three\r\nlines\n");
+        return root;
+    }
+
+    private static List<string> TreeSnapshot(string root) =>
+        Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories).Order()
+            .Select(p => Path.GetRelativePath(root, p) + (Directory.Exists(p) ? "/" : ":" + Convert.ToHexString(File.ReadAllBytes(p))))
+            .ToList();
+
+    [Fact]
+    public void Archive_then_Restore_round_trips_a_nested_tree_byte_exactly()
+    {
+        var tree = MakeTree("tree1");
+        var other = Write("other.txt", "untouched");
+        var snap = TreeSnapshot(tree);
+        var arc = new ArchiveStore(ArchiveRoot, Home);
+
+        var dir = arc.Archive(Info("s1", tree), [tree]);
+
+        Assert.False(Directory.Exists(tree));
+        Assert.Equal(snap, TreeSnapshot(Path.Combine(dir, "files", char.ToUpperInvariant(tree[0]).ToString(), tree[3..])));
+        arc.Restore(dir);
+        Assert.Equal(snap, TreeSnapshot(tree));
+        Assert.False(Directory.Exists(dir));
+        Assert.Equal("untouched", File.ReadAllText(other));
+    }
+
+    private static ArchiveStore Forced(string root, string home, Action<ArchiveStore>? configure = null)
+    {
+        var a = new ArchiveStore(root, home) { ForceNotSameDevice = (_, _) => true };
+        configure?.Invoke(a);
+        return a;
+    }
+
+    [Fact]
+    public void Archive_of_directory_with_exclusively_held_file_fails_and_leaves_original_identical()
+    {
+        var tree = MakeTree("tree1");
+        var locked = Path.Combine(tree, "a", "one.txt");
+        var snap = TreeSnapshot(tree);
+        var arc = new ArchiveStore(ArchiveRoot, Home);
+        IOException ex;
+        using (new FileStream(locked, FileMode.Open, FileAccess.Write, FileShare.None))
+            ex = Assert.ThrowsAny<IOException>(() => arc.Archive(Info("s1", tree), [tree]));
+        Assert.Equal(snap, TreeSnapshot(tree));
+        // State asserted: rolled back cleanly. No payload and no manifest are left in the archive location.
+        var archiveDir = Path.Combine(ArchiveRoot, "claude", "s1");
+        Assert.False(Directory.Exists(archiveDir) && Directory.EnumerateFiles(archiveDir, "*", SearchOption.AllDirectories).Any());
+        Assert.Contains("originals are intact", ex.Message);
+    }
+
+    [Fact]
+    public void Forced_not_same_device_copy_verify_delete_round_trips_byte_exactly()
+    {
+        var tree = MakeTree("tree1");
+        var single = Write("single.bin", "payload");
+        var snap = TreeSnapshot(tree);
+        var arc = Forced(ArchiveRoot, Home);
+
+        var dir = arc.Archive(Info("s1", tree), [tree, single]);
+
+        Assert.False(Directory.Exists(tree));
+        Assert.False(File.Exists(single));
+        Assert.Equal(snap, TreeSnapshot(Path.Combine(dir, "files", char.ToUpperInvariant(tree[0]).ToString(), tree[3..])));
+        arc.Restore(dir);
+        Assert.Equal(snap, TreeSnapshot(tree));
+        Assert.Equal("payload", File.ReadAllText(single));
+        Assert.False(Directory.Exists(dir));
+    }
+
+    [Fact]
+    public void Failed_delete_phase_restores_the_original_whole_and_removes_archive_and_manifest()
+    {
+        var tree = MakeTree("tree1");
+        var snap = TreeSnapshot(tree);
+        var calls = 0;
+        var arc = Forced(ArchiveRoot, Home, a => a.BeforeDeleteOriginal = _ =>
+        {
+            if (++calls == 3) throw new IOException("simulated delete failure");
+        });
+
+        var ex = Assert.Throws<IOException>(() => arc.Archive(Info("s1", tree), [tree]));
+
+        Assert.Equal(snap, TreeSnapshot(tree));                               // original whole again
+        var archiveDir = Path.Combine(ArchiveRoot, "claude", "s1");
+        Assert.False(Directory.Exists(archiveDir));                           // payload and manifest gone
+        Assert.Contains("originals restored", ex.Message);
+        Assert.DoesNotContain("partially removed", ex.Message);
+    }
+
+    [Fact]
+    public void Failed_delete_phase_with_failed_copy_back_keeps_archive_and_manifest_and_says_so()
+    {
+        var tree = MakeTree("tree1");
+        var snap = TreeSnapshot(tree);
+        var calls = 0;
+        var arc = Forced(ArchiveRoot, Home, a =>
+        {
+            a.BeforeDeleteOriginal = _ => { if (++calls == 3) throw new IOException("simulated delete failure"); };
+            a.BeforeCopyBack = _ => throw new IOException("simulated copy-back failure");
+        });
+
+        var ex = Assert.Throws<IOException>(() => arc.Archive(Info("s1", tree), [tree]));
+
+        var archiveDir = Path.Combine(ArchiveRoot, "claude", "s1");
+        Assert.True(File.Exists(Path.Combine(archiveDir, "manifest.json")));
+        Assert.Contains("partially removed", ex.Message);
+        Assert.Contains(archiveDir, ex.Message);
+        Assert.Contains("manifest", ex.Message);
+        Assert.DoesNotContain("originals are intact", ex.Message);
+        // Full copy kept, byte-exact.
+        Assert.Equal(snap, TreeSnapshot(Path.Combine(archiveDir, "files", char.ToUpperInvariant(tree[0]).ToString(), tree[3..])));
+    }
+
+    [Fact]
+    public void Restore_with_failing_delete_phase_keeps_manifest_and_archive_and_restores_the_archive()
+    {
+        var tree = MakeTree("tree1");
+        var snap = TreeSnapshot(tree);
+        var dir = new ArchiveStore(ArchiveRoot, Home).Archive(Info("s1", tree), [tree]);
+        var arc = Forced(ArchiveRoot, Home, a => a.BeforeDeleteOriginal = _ => throw new IOException("simulated"));
+
+        var ex = Assert.Throws<IOException>(() => arc.Restore(dir));
+
+        Assert.True(File.Exists(Path.Combine(dir, "manifest.json")));
+        Assert.False(Directory.Exists(tree));
+        Assert.Equal(snap, TreeSnapshot(Path.Combine(dir, "files", char.ToUpperInvariant(tree[0]).ToString(), tree[3..])));
+        Assert.Contains("archive is intact", ex.Message);
     }
 
     [Fact]
@@ -320,14 +468,19 @@ public sealed class CleanupServiceTests : IDisposable
     [Fact]
     public void Delete_refuses_path_that_contains_the_archive()
     {
-        var (svc, _, _) = Make(owned: _ => [_tmp]);
-        Directory.CreateDirectory(ArchiveRoot);
-        var home = new CleanupService(
-            new Dictionary<string, ISessionAdapter> { ["claude"] = new TestAdapter("claude", All, _ => [_tmp]) },
-            new ArchiveStore(ArchiveRoot, Home), Path.Combine(_tmp, "elsewhere-home"));
-        var result = home.Apply(home.Plan([Listed(Info("a", _tmp))], CleanupAction.Delete));
-        Assert.Single(result.Failed);
-        Assert.True(Directory.Exists(ArchiveRoot));
+        // owned contains the archive root; it is neither a root nor the home dir nor a parent of the (separate) home dir,
+        // so only the archive-contains guard can reject it.
+        var owned = Path.Combine(_tmp, "owned");
+        var archiveRoot = Path.Combine(owned, "archive");
+        Directory.CreateDirectory(archiveRoot);
+        File.WriteAllText(Path.Combine(archiveRoot, "keep.txt"), "k");
+        var svc = new CleanupService(
+            new Dictionary<string, ISessionAdapter> { ["claude"] = new TestAdapter("claude", All, _ => [owned]) },
+            new ArchiveStore(archiveRoot, Home), Home);
+        var result = svc.Apply(svc.Plan([Listed(Info("a", owned))], CleanupAction.Delete));
+        var failure = Assert.Single(result.Failed);
+        Assert.Contains("contains the archive", failure.Error);
+        Assert.Equal("k", File.ReadAllText(Path.Combine(archiveRoot, "keep.txt")));
     }
 
     [Fact]
