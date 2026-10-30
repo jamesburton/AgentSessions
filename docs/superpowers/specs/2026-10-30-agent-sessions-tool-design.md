@@ -153,8 +153,14 @@ soft (skip and report an unreadable session, never crash the list) and be isolat
 - **Handoff size:** extraction is bounded (a capped number of recent messages and commands,
   long outputs truncated) with the full source always referenced by path. Exact limits are
   the builder's to tune.
-- **Active sessions:** a session modified within a short recent window, or with an open
-  lock, is never offered for archive/delete.
+- **Active sessions (user's choice):** a session modified within a short recent window, or
+  with an open lock, shows a clear warning but archive/delete is still allowed after
+  confirmation.
+
+All the calls above were reviewed with the user on 2026-10-30 and confirmed, except the TUI
+library, which the user left to the builder, and the handoff-size cap, whose exact limits
+remain the builder's to tune. Archive home: the tool's own data folder, preserving each
+session's original relative path. `handoff.md` backup: a timestamped sibling file.
 
 ## Open items
 
