@@ -30,7 +30,12 @@ public sealed class ListCommand(AppServices services, IAnsiConsole console) : Co
 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
-        if (services.SettingsWarning is { } warning) console.MarkupLine($"[dim]{Esc(warning)}[/]");
+        PrintSettingsWarnings(services, console);
+        if (s.Agent is not null && !services.Adapters.ContainsKey(s.Agent))
+        {
+            console.MarkupLine($"[red]Unknown agent '{Esc(s.Agent)}'. Known agents: {Esc(string.Join(", ", services.Adapters.Keys))}.[/]");
+            return Usage;
+        }
         TimeSpan? older = s.OlderThan is { } d ? TimeSpan.FromDays(d) : null;
         var (sessions, skipped) = services.Catalog.List(new SessionFilter(s.Agent, s.Project, older));
         var rows = s.Stale ? sessions.Where(x => x.IsStale).ToList() : sessions.ToList();

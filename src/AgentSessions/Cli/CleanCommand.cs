@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using AgentSessions.Config;
 using AgentSessions.Services;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -43,8 +44,17 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
-        if (services.SettingsWarning is { } warning) console.MarkupLine($"[dim]{Esc(warning)}[/]");
+        PrintSettingsWarnings(services, console);
         var action = s.Delete ? CleanupAction.Delete : CleanupAction.Archive;
+
+        // Belt and braces for a scripted delete: settings.json is normalised on load (staleDays >= 1), but settings can
+        // also be supplied directly. A sub-day threshold the user did not type would make every session "stale".
+        if (action == CleanupAction.Delete && s.Apply && s.Ids is null && s.OlderThan is null
+            && services.Settings.StaleDays < SettingsStore.MinStaleDays)
+        {
+            console.MarkupLine($"[red]Refused: the stale threshold ({services.Settings.StaleDays} days) is below 1 day, so every session would be selected for deletion. Pass --older-than DAYS explicitly. Nothing was changed.[/]");
+            return Error;
+        }
 
         var all = services.Catalog.List().Sessions;
         var selection = CleanupSelection.Select(all, s.Ids is null ? null : CleanupSelection.ParseIds(s.Ids),

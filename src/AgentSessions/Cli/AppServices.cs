@@ -11,8 +11,11 @@ namespace AgentSessions.Cli;
 public sealed class AppServices
 {
     public AppSettings Settings { get; }
-    /// <summary>Set when settings.json exists but could not be read (defaults are in effect); shown by list and clean.</summary>
-    public string? SettingsWarning { get; init; }
+    /// <summary>
+    /// Problems found when loading settings.json (unreadable file, or values replaced by defaults); each is shown once,
+    /// dim, by list and clean.
+    /// </summary>
+    public IReadOnlyList<string> SettingsWarnings { get; init; } = [];
     public IReadOnlyDictionary<string, ISessionAdapter> Adapters { get; }
     public Func<DateTimeOffset> Now { get; }
     public SessionCatalog Catalog { get; }
@@ -52,7 +55,7 @@ public sealed class AppServices
             () => DateTimeOffset.UtcNow, settings.ArchiveRoot ?? Path.Combine(dataDir, "archive"),
             new LabelStore(Path.Combine(dataDir, "labels.json")))
         {
-            SettingsWarning = store.LastLoadFailed ? "settings.json could not be read; using defaults." : null
+            SettingsWarnings = store.Warnings.ToList()
         };
     }
 }

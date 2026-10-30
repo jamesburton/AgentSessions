@@ -43,6 +43,12 @@ internal static class CliSupport
         return i == 0 ? $"{bytes} B" : $"{v:0.0} {units[i]}";
     }
 
+    /// <summary>Prints each settings warning once, dim (list and clean).</summary>
+    public static void PrintSettingsWarnings(AppServices services, IAnsiConsole console)
+    {
+        foreach (var w in services.SettingsWarnings.Distinct()) console.MarkupLine($"[dim]{Esc(w)}[/]");
+    }
+
     public static bool IsInteractive(IAnsiConsole console) => console.Profile.Capabilities.Interactive;
 
     /// <summary>

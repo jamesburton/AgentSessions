@@ -439,6 +439,89 @@ public class CliTests : IDisposable
     }
 
     [Fact]
+    public void cleanup_selection_older_than_zero_is_strictly_older_than()
+    {
+        var now = new ListedSession(Session("claude", "now", "Now", 0) with { LastActivity = Now }, false, true, Full);
+        var future = new ListedSession(Session("claude", "fut", "Future", 0) with { LastActivity = Now.AddMinutes(5) }, false, true, Full);
+        var minute = new ListedSession(Session("claude", "min", "Minute", 0) with { LastActivity = Now.AddMinutes(-1) }, false, true, Full);
+
+        var r = CleanupSelection.Select([now, future, minute], null, 0, Now);
+
+        Assert.Equal([minute], r.Selected);   // a session active at this instant (or later) is never "older than 0 days"
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("clean")]
+    public void settings_warnings_are_printed_once_each(string command)
+    {
+        var (svc, console) = Default("{ \"staleDays\": 0, \"archiveRoot\": \"relative\\\\dir\", \"recentActiveMinutes\": -1 }");
+
+        Assert.Equal(0, Program.Run([command], console, svc));
+
+        var o = console.Output.Replace("\n", " ");
+        foreach (var w in new[] { "staleDays must be between 1 and 36500; using 30.", "archiveRoot must be an absolute path; using the default.",
+                     "recentActiveMinutes must be 0 or more; using 15." })
+            Assert.Equal(1, o.Split(w).Length - 1);
+    }
+
+    [Fact]
+    public void relative_archive_root_never_reaches_the_archive_store()
+    {
+        var (svc, _) = Default("{ \"archiveRoot\": \"relative\" }");
+        Assert.Equal(Path.Combine(_root, "defdata", "archive"), svc.Archive.Root);
+        Assert.True(Path.IsPathFullyQualified(svc.Archive.Root));
+    }
+
+    [Fact]
+    public void clean_delete_apply_yes_refuses_a_stale_threshold_below_one_day_from_settings()
+    {
+        // Load() normalises staleDays, but settings can also be constructed directly: the clean command must not
+        // turn "every session is stale" into a scripted mass delete.
+        var s = Session("claude", "c1", "Recent", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], new AppSettings(StaleDays: 0));
+
+        var code = Program.Run(["clean", "--delete", "--apply", "--yes"], console, svc);
+
+        Assert.Equal(1, code);
+        Assert.Contains("below 1 day", console.Output);
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void clean_delete_with_explicit_older_than_zero_is_the_users_choice()
+    {
+        var s = Session("claude", "c1", "Recent", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], new AppSettings(StaleDays: 0));
+
+        var code = Program.Run(["clean", "--delete", "--apply", "--yes", "--older-than", "0"], console, svc);
+
+        Assert.Equal(0, code);
+        Assert.False(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void list_with_unknown_agent_is_a_usage_error_naming_the_valid_agents()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, []), new FakeAdapter("codex", Full, [])]);
+
+        var code = Program.Run(["list", "--agent", "bogus"], console, svc);
+
+        Assert.Equal(2, code);
+        Assert.Contains("Unknown agent 'bogus'", console.Output);
+        Assert.Contains("claude, codex", console.Output);
+        Assert.DoesNotContain("session(s).", console.Output);
+    }
+
+    [Fact]
+    public void list_agent_filter_is_case_insensitive()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [Session("claude", "c1", "One", 0)])]);
+        Assert.Equal(0, Program.Run(["list", "--agent", "CLAUDE"], console, svc));
+        Assert.Contains("1 session(s).", console.Output);
+    }
+
+    [Fact]
     public void clean_archive_and_delete_together_is_a_usage_error()
     {
         var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
