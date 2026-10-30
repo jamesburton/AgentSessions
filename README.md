@@ -31,8 +31,9 @@ agentsessions
 `agentsessions --version` prints the version. (Through `dnx`, put `--` before tool arguments that dnx also
 understands, e.g. `dnx AgentSessions -- --version`, since `dnx` has its own `--version` option.)
 
-With no arguments in an interactive terminal it opens the TUI. Without a terminal (piped, redirected) it prints the
-command help instead. Every operation is also a plain command, listed below.
+With no arguments in an interactive terminal it opens the TUI. Without a terminal (stdin or stdout piped or
+redirected) it prints the command help instead. Every operation is also a plain command, listed below. In a terminal
+the console is switched to UTF-8 so titles and symbols render correctly.
 
 ## The TUI
 
@@ -62,10 +63,13 @@ agentsessions   filter: all agents · all projects · any age
 | `a` | Archive the marked sessions (or the current one if none are marked) |
 | `d` | Permanently delete the marked sessions (or the current one) |
 | `r` | Reload from disk |
-| `q` / Esc | Quit |
+| `q` | Quit (Esc does not quit the list; it only cancels a prompt) |
 
 `a` and `d` first print the plan (paths, active-session warnings, declined items) and then ask for a single `y`
 keypress; anything else cancels. Keys typed ahead before the plan appears are discarded, so they cannot confirm.
+Keys pressed while a resumed or transferred-to agent was running are discarded too when it exits, so they cannot
+trigger an action in the list. (Esc is not a quit key because an agent can leave the console in a mode where arrow
+keys arrive as Esc sequences.)
 
 Filter syntax: space-separated tokens.
 
@@ -86,6 +90,7 @@ agentsessions list [--agent claude|codex|copilot] [--project TEXT] [--older-than
 ```
 
 Prints a table and a count. Sessions that could not be read are not hidden: a final line says how many were skipped.
+An unknown `--agent` is a usage error (exit 2) that names the valid agents.
 
 ### `clean`
 
@@ -99,7 +104,11 @@ Selects stale sessions (older than `staleDays`, or `--older-than`), or the exact
 - `--archive` (the default action) moves the sessions to the archive.
 - `--delete` removes them permanently. It is never the default and does nothing without `--apply`.
 - `--apply` actually performs the plan. Unless `--yes` is given you are asked to confirm (default No). With no
-  interactive terminal and no `--yes`, it refuses and exits 1.
+  interactive terminal (including any piped or redirected stdin or stdout, so `echo y | agentsessions clean ...`
+  cannot confirm) and no `--yes`, it refuses and exits 1.
+- `--older-than DAYS` selects sessions inactive for strictly more than DAYS days (`0` means anything not active right
+  now). `--delete --apply` refuses (exit 1) if the threshold would come from settings and is below 1 day; pass
+  `--older-than` explicitly instead.
 - Exit 1 if any item failed or if everything selected was declined.
 
 ### `resume`
@@ -136,7 +145,9 @@ agentsessions restore <archive folder>
 ```
 
 Puts an archived session back exactly where it came from. The folder is the one under the archive root that
-contains `manifest.json` (for example `<archiveRoot>\claude\<id>`).
+contains `manifest.json` (for example `<archiveRoot>\claude\<id>`). Always restore with this command, never by copying
+files out of the archive by hand: the payload is laid out by volume, not by original location (see Safety rules), and
+only `manifest.json` records where each item came from.
 
 ## Safety rules
 
@@ -147,8 +158,13 @@ contains `manifest.json` (for example `<archiveRoot>\claude\<id>`).
 - Sessions with recent activity (within `recentActiveMinutes`) are flagged as possibly still running; the plan shows
   a warning and the confirmation prompt counts them.
 - The archive lives under `archiveRoot` (default: `archive` inside the settings folder, see Settings), laid out as
-  `<agent>/<id>/` with a `manifest.json` and the original files. Moves are verified, and if anything fails part way
-  the originals are put back.
+  `<archiveRoot>/<agent>/<id>/manifest.json` plus the payload under `<archiveRoot>/<agent>/<id>/files/<volume>/<path
+  on that volume>` (`<volume>` is the drive letter, e.g. `files/C/Users/me/.claude/...`, or `UNC_<server>_<share>`).
+  The manifest records every original absolute path and where it was archived.
+- How items are moved: on the same volume, a native rename (atomic per item; the content is not re-read). Across
+  volumes, a copy, then a size and SHA-256 check of every file, then deletion of the originals. If deleting the
+  originals fails part way, the missing originals are copied back (never overwriting) and verified; if even that fails,
+  the archive copy and `manifest.json` are kept and the error says so explicitly (nothing is deleted from the archive).
 - `restore` never overwrites: if anything already exists at an original path, it stops and changes nothing.
 - A transfer never overwrites `.docs/handoff.md`. An existing file is first copied to
   `.docs/handoff.<yyyy-MM-ddTHHmm>.md` (UTC; `-2`, `-3` on collision), the copy is verified byte for byte, and the
@@ -161,9 +177,14 @@ contains `manifest.json` (for example `<archiveRoot>\claude\<id>`).
 
 Transfer is direct extraction: the tool reads the source session's transcript with its own parser and writes a
 structured Markdown handoff (source reference, original request, recent activity, files touched, last commands,
-where it stopped). The
-handoff header records the source agent, session id and store path. Nothing leaves the machine, and no model is
-involved unless you opt in.
+where it stopped). The handoff header records the source agent, session id and store path. Nothing leaves the
+machine, and no model is involved unless you opt in.
+
+What the handoff contains: the first real prompt; the last 20 user/assistant messages and, interleaved, the last 20
+tool calls (each as `Tool (<name>)` with its command or a one-line summary of its input); every file path the tool
+calls named (first 50 listed); the last 10 shell commands; and the last message, plus the last tool call if one came
+after it. Tool OUTPUTS are not copied (they can be huge); the handoff says how many were omitted and points to the
+full original session, which the target agent can open.
 
 Optional polish: an extra pass through a command you configure. It is off by default.
 
@@ -182,24 +203,31 @@ The label replaces the title in `list` and the TUI. This file is the only thing 
 stores are never modified, so a label cannot corrupt or confuse an agent. Labels are limited to 120 characters; a
 corrupt labels file is kept as a backup copy and treated as empty.
 
+Labels survive archiving: the label stays in `labels.json` under the same `agent:id` key and is shown again once the
+session is restored. Labels of deleted sessions are not removed; they are harmless (nothing shows them) and simply
+accumulate.
+
 ## Settings
 
 A JSON file, `settings.json`, in `%LOCALAPPDATA%\AgentSessions\` (the same folder holds `labels.json` and, by
 default, the `archive` folder), i.e. `settings.json` next to `labels.json`.
 
-- Key names are case-insensitive (`staleDays`, `staleDays` and `STALEDAYS` are the same key); the tool writes camelCase.
+- Key names are case-insensitive (`StaleDays`, `staleDays` and `STALEDAYS` are the same key); the tool writes camelCase.
 - Unknown or misspelled keys are ignored, so check the spelling against the table.
 - A missing file means all defaults. A file that exists but is malformed or unreadable is also ignored and the
   defaults apply; `list` and `clean` then print a dim line, `settings.json could not be read; using defaults.`, but
   the exit code is unchanged. (The TUI shows no such line.)
+- Unsafe values are replaced by the default, with one dim warning line each from `list` and `clean`: `staleDays`
+  outside 1 to 36500 (0 would make every session stale), an `archiveRoot` that is blank or not an absolute path (it
+  would depend on the current directory), and a negative `recentActiveMinutes`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `staleDays` | `30` | Sessions inactive longer than this are stale |
-| `archiveRoot` | settings folder `\archive` | Where `clean --archive` puts sessions |
+| `staleDays` | `30` | Sessions inactive longer than this are stale (1 to 36500) |
+| `archiveRoot` | settings folder `\archive` | Where `clean --archive` puts sessions (absolute path) |
 | `polishEnabled` | `false` | Allow the opt-in polish pass |
 | `polishCommand` | none | Command for polish (stdin to stdout), e.g. `mymodel --polish` |
-| `recentActiveMinutes` | `15` | Activity within this window counts as "possibly active" |
+| `recentActiveMinutes` | `15` | Activity within this window counts as "possibly active" (0 or more) |
 
 ```json
 { "staleDays": 45, "archiveRoot": "D:\\session-archive", "polishEnabled": false }
@@ -230,6 +258,24 @@ Not yet supported: Antigravity, OpenCode, Hermes.
 - Format-control characters (Unicode category Cf, such as zero-width joiners) are stripped from labels.
 - Copilot: hidden (dot-prefixed) folders under `session-state` are treated as the agent's bookkeeping and skipped by `list`, not counted as unreadable sessions.
 - The agents' on-disk formats are not public contracts and can change; unreadable sessions are skipped and counted.
+- A session whose id (file or folder name) is empty, starts with `-`, or contains anything other than letters, digits,
+  `.`, `_` and `-` is skipped and counted, because the id is passed to the agent on its command line.
+- The agents keep their own indexes and caches outside the session files; archive and delete leave those untouched
+  (details and reasoning in [`docs/formats/`](docs/formats/), "Agent index after archive"):
+  - Claude Code: prompt history lines in `~/.claude/history.jsonl`, and `~/.claude/file-history/<id>/` and
+    `~/.claude/session-env/<id>/`. After an archive they line up again on restore. After a delete they remain,
+    including copies of your prompts and backups of edited files.
+  - Codex CLI: `history.jsonl`, `session_index.jsonl` and rows in its `state_*.sqlite` / `thread_history_*.sqlite`
+    databases. After an archive Codex's own resume picker may still show the session (unverified) and it will not
+    open until restored. After a delete those rows remain, including copies of prompts and of the conversation.
+    Codex's own archive (`archived_sessions`, also listed here) keeps its index consistent.
+- Cross-volume archive or restore (archive root on a different drive) copies only each file's main data stream: NTFS
+  alternate data streams (such as the `Zone.Identifier` download mark), file attributes and folder timestamps are not
+  preserved.
+  Same-volume moves are renames and keep everything.
+- Cross-volume: the size and time of each original are re-checked right before it is deleted, but an agent writing to
+  the session in the very short window between that re-check and the delete is not detected. Do not clean sessions
+  that are in use (the active-session warning exists for this).
 
 ## Development
 

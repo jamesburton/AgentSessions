@@ -8,7 +8,7 @@ Derived from a format spike on two real sessions (names and value types only; no
 - Archived: `<home>/.codex/archived_sessions/rollout-<...>-<uuid>.jsonl` (flat; same file name scheme).
   A session is archived when its `StorePath` is under `archived_sessions`.
 - Session id = the UUID at the end of the file stem (also `session_meta.payload.id`).
-- Other things in `~/.codex` (`history.jsonl`, `session_index.jsonl`, `*.sqlite`) are indexes/state, not sessions.
+- Other things in `~/.codex` (`history.jsonl`, `session_index.jsonl`, `*.sqlite`) are indexes/state, not sessions (see "Agent index after archive" below).
 
 ## JSONL
 
@@ -84,6 +84,41 @@ such sessions list with null cwd and the `(no prompt)` title placeholder.
 The head scan stops after `JsonlReader.HeadScanBytes` (256 KB) even if cwd/title are not found
 (then ProjectPath is null and title is `(no prompt)`). The tail scan reads the last 64 KB; if that
 window holds no complete line (one huge final line) LastActivity falls back to the file mtime.
+
+## Agent index after archive: verdict (AfterRemove stays a no-op)
+
+Method (2026-10-30): structure only on this machine: entry names (ids replaced by shapes), sizes, JSON key names,
+SQLite table/column names and row counts (opened read-only with `immutable=1`), and yes/no counts of whether an id
+matches an existing rollout file. No contents were read or recorded. Codex itself was not run.
+
+VERIFIED, things outside the rollout file that are keyed by the session (thread) id and are left behind:
+
+| Path | Shape | What it holds |
+|---|---|---|
+| `history.jsonl` | lines `session_id`, `text`, `ts` (23 ids, all with a rollout) | copies of typed prompts |
+| `session_index.jsonl` (+ `.lock`) | lines `id`, `thread_name`, `updated_at` (37 ids, all with a rollout) | thread names for the picker |
+| `state_<n>.sqlite` `threads` | 201 rows = one per rollout; `id`, `rollout_path`, `archived`, `archived_at`, `title`, `first_user_message`, `cwd`, `preview`, ... | the thread index. 3 rows had a `rollout_path` that no longer existed although the id matched a rollout elsewhere, so Codex already lives with stale paths; 15 rows carry Codex's own `archived` flag (its native archive moves the file to `archived_sessions/`) |
+| `state_<n>.sqlite` other tables | `thread_spawn_edges`, `thread_dynamic_tools`, `thread_attachments`, `thread_read_receipts`, ... (`thread_id` keyed) | per-thread metadata |
+| `thread_history_<n>.sqlite` | `thread_items` (`thread_id`, `item_json`, ...; 163 thread ids, all with a rollout), `thread_turns`, `thread_history_projection_state` | a projection of the conversation (copies of items) |
+| `goals_<n>.sqlite`, `memories_<n>.sqlite`, `logs_<n>.sqlite` | `thread_id` columns (goals/memories empty here) | goals, memory extraction, logs |
+| `thread-writer-locks/<id>.lock`, `tui-thread-reference-capabilities/<id>` | per-thread files | live-writer locks and TUI state |
+
+The `*.sqlite` files are live (`-wal` / `-shm` present, a `.sqlite-maintenance.lock`).
+
+UNVERIFIED (the agent was not run): what `codex resume` and its picker do with a `threads` row whose rollout file is
+missing. Plausible outcomes are that the picker still lists the thread (from `state_*.sqlite`) and opening it fails
+until the file is restored, or that the picker re-validates `rollout_path` and hides it.
+
+Why `AfterRemove` stays a no-op:
+- Archive moves the rollout into this tool's archive and `restore` puts it back at the identical path, so every row
+  above (including `threads.rollout_path`) is valid again after a restore. Nothing is lost.
+- Keeping the index consistent would mean writing to live, versioned, undocumented SQLite databases from a second
+  process (lock contention or corruption risk) and adding a SQLite dependency; the same reasoning that declined
+  Copilot cleanup applies to editing them.
+- Consequences: after archive the Codex picker may show an entry that cannot be opened until restored; after
+  `--delete` the rollout file is gone but prompt copies (`history.jsonl`), the thread row and the conversation
+  projection (`thread_history_*.sqlite`) remain. Both are documented in the README's known limitations. Codex's own
+  archive (`archived_sessions/`) is an alternative that keeps its index consistent; this tool lists those sessions too.
 
 ## Resume / launch
 

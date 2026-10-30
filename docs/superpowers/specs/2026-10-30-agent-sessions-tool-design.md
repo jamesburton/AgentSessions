@@ -147,6 +147,12 @@ soft (skip and report an unreadable session, never crash the list) and be isolat
   and, where the agent keeps an index/database of sessions, updates it so the session no
   longer appears in the agent's own picker. Where that is not safe, archive is declined for
   that agent. A short spike per agent decides this before the adapter is built.
+  Outcome (recorded in `docs/formats/*-format.md`, "Agent index after archive"): Copilot: unsafe, cleanup declined.
+  Claude: no session index was found that its picker needs (prompt history and per-session folders are left behind
+  and re-attach on restore); archive kept. Codex: its live SQLite state (`threads.rollout_path`) and history files are
+  left untouched, because writing them from a second process is unsafe; whether its picker still lists an archived
+  session is UNVERIFIED. Archive is kept because it is restorable to the identical path with nothing lost, which is a
+  deliberate deviation from "declined" above, awaiting the user's confirmation.
 - **Launching agents:** the tool starts the target agent as a child process and returns to
   the list when it exits. If an agent's CLI cannot take an opening prompt, the tool falls
   back to copying the prompt to the clipboard and printing it, and says so.

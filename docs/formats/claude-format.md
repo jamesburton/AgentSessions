@@ -77,6 +77,37 @@ Transcript mapping (`ClaudeAdapter.ReadTranscript`):
 | last activity | max of `timestamp` across entries, else file mtime |
 | files touched | `tool_use.input.file_path` / `path` / `notebook_path` |
 
+## Agent index after archive: verdict (AfterRemove stays a no-op)
+
+Method (2026-10-30): structure only on this machine: entry names with ids replaced by a `<guid>` shape, sizes, JSON
+key names, and yes/no counts of whether an entry's id matches an existing session file. No contents were read or
+recorded. Claude Code itself was not run.
+
+VERIFIED, things outside the session file that are keyed by the session id and are left behind by archive/delete:
+
+| Path | Shape | What it holds |
+|---|---|---|
+| `~/.claude/history.jsonl` | one JSON line per typed prompt: `display`, `pastedContents`, `project`, `sessionId`, `timestamp` | copies of the prompt text (the up-arrow history). 240 distinct `sessionId`s here, but only 27 session files exist: Claude Code's own transcript cleanup already leaves history lines for sessions that are gone, so a history line without a session is a normal state for the agent. |
+| `~/.claude/file-history/<sessionId>/` | 21 folders, all matching a session id | backups of edited files (rewind/checkpoints). |
+| `~/.claude/session-env/<sessionId>/` | 25 folders, all matching a session id | per-session environment data. |
+| `~/.claude/todos/`, `~/.claude/debug/` | absent / empty on this machine | older versions keep per-session files named by the id (`<id>-agent-<id>.json`, `<id>.txt`): not verified here. |
+
+Owned and moved with the session (not leftovers): `<projectFolder>/<sessionId>.jsonl` and the sibling folder
+`<projectFolder>/<sessionId>/` (subagent transcripts), see `OwnedPaths`.
+
+UNVERIFIED (the agent was not run): how `claude --resume` and its picker treat a session whose file is missing.
+Expected from the layout: the picker is built from `projects/*/*.jsonl`, so an archived session simply does not appear,
+and `claude --resume <id>` for a missing id reports that no conversation was found. No index file listing sessions was
+found that the picker would need to agree with.
+
+Why `AfterRemove` stays a no-op:
+- Archive is restorable byte for byte to the same paths; the leftovers above are keyed by the unchanged id, so they line
+  up again after `agentsessions restore`. Nothing is lost.
+- `history.jsonl` is a shared, append-only file written live by every running Claude Code process; rewriting it from
+  another process could lose concurrent writes. The leftovers are what the agent already tolerates.
+- Consequence for `--delete`: the transcript and its sibling folder are deleted, but prompt copies in `history.jsonl`
+  and file backups in `file-history/<id>/` remain (documented in the README's known limitations).
+
 ## Resume / launch
 
 - Resume: `claude --resume <sessionId>` run with working directory = project path.
