@@ -9,9 +9,19 @@
     <ToolCommandName>agentsessions</ToolCommandName>
     <PackageId>AgentSessions</PackageId>
     <Version>0.1.0</Version>
-    <Description>List, resume, clean up and transfer coding-agent sessions.</Description>
+    <Description>List, resume, clean up, label and transfer coding-agent sessions across Claude, Codex and Copilot.</Description>
+    <PackageTags>ai;agents;claude;codex;copilot;sessions;cli;tui;dotnet-tool</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/jamesburton/AgentSessions</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jamesburton/AgentSessions</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PackageOutputPath>$(MSBuildThisFileDirectory)../../artifacts</PackageOutputPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="AgentSessions.Tests" />

@@ -32,6 +32,8 @@ public class CopilotAdapter(string homeDir) : ISessionAdapter
 
         foreach (var dir in dirs)
         {
+            // Hidden folders (e.g. the agent's lock folder) are bookkeeping, not sessions.
+            if (Path.GetFileName(dir).StartsWith('.')) continue;
             try
             {
                 if (Summarize(dir) is { } s) sessions.Add(s);

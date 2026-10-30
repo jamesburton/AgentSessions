@@ -194,6 +194,18 @@ public class CopilotAdapterTests
     }
 
     [Fact]
+    public void Discover_ignores_dot_prefixed_bookkeeping_folders()
+    {
+        // Found by the real-data smoke test: the agent keeps a hidden lock folder beside the sessions.
+        var home = SessionFixtures.TempHome();
+        var root = Path.Combine(home, ".copilot", "session-state");
+        Directory.CreateDirectory(Path.Combine(root, ".session-operation-locks"));
+        var result = new CopilotAdapter(home).Discover();
+        Assert.Empty(result.Sessions);
+        Assert.Empty(result.Skipped);
+    }
+
+    [Fact]
     public void Discover_large_session_does_not_parse_whole_file()
     {
         var home = SessionFixtures.TempHome();
