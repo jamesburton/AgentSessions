@@ -19,6 +19,8 @@ public static class Program
             return 0;
         }
 
+        // Before anything touches AnsiConsole: the default Windows code page renders '…', '·' and non-ASCII titles as '?'.
+        ConsoleSetup.UseUtf8(Console.IsOutputRedirected, e => Console.OutputEncoding = e, e => Console.InputEncoding = e);
         return RunMain(args, AnsiConsole.Console, () => AppServices.CreateDefault());
     }
 
@@ -39,7 +41,7 @@ public static class Program
         if (args.Length == 0)
         {
             // The TUI is the primary interface; without a terminal fall back to the command help.
-            if (CliSupport.IsInteractive(console))
+            if (CliSupport.IsInteractive(console, services.ConsoleEnvironment))
                 return new Tui.MainScreen(console, services, new Tui.ConsoleKeySource()).Run();
             args = ["--help"];
         }
@@ -52,7 +54,7 @@ public static class Program
             c.Settings.ExceptionHandler = (ex, _) =>
             {
                 var usage = ex is CommandParseException or CommandRuntimeException;
-                console.MarkupLine($"[red]{Markup.Escape(ex.Message)}[/]");
+                console.MarkupLine($"[red]{CliSupport.Esc(ex.Message)}[/]");   // messages can echo raw argv
                 return usage ? 2 : 1;
             };
             c.AddCommand<ListCommand>("list").WithDescription("List sessions across agents.");

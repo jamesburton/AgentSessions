@@ -20,7 +20,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
 
     public int Run()
     {
-        if (!IsInteractive(console))
+        if (!Interactive)
         {
             console.MarkupLine("The interactive screen needs a terminal. Use [bold]agentsessions list[/] or [bold]agentsessions clean[/] instead.");
             return 1;
@@ -67,7 +67,12 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         }
     }
 
-    /// <summary>Returns false to quit.</summary>
+    private bool Interactive => IsInteractive(console, services.ConsoleEnvironment);
+
+    /// <summary>
+    /// Returns false to quit. Only <c>q</c> quits: a bare Escape is ignored here because a child agent can leave the
+    /// console in VT input mode, where an arrow key arrives as ESC [ A (Escape still cancels prompts).
+    /// </summary>
     private bool Handle(ConsoleKeyInfo key)
     {
         switch (key.Key)
@@ -80,7 +85,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
             case ConsoleKey.End: _model.MoveLast(); return true;
             case ConsoleKey.Spacebar: _model.ToggleMark(); return true;
             case ConsoleKey.Enter: Resume(); return true;
-            case ConsoleKey.Escape: return false;
+            case ConsoleKey.Escape: return true;
         }
 
         switch (char.ToLowerInvariant(key.KeyChar))
@@ -237,9 +242,16 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
             _status.Add($"[red]The {Esc(adapter.Name)} adapter cannot resume sessions.[/]");
             return;
         }
-        var result = services.Launcher.Resume(adapter, cur.Info, FolderPrompt(console));
+        var result = services.Launcher.Resume(adapter, cur.Info, FolderPrompt(console, services.ConsoleEnvironment));
+        DiscardTypedAhead();
         Report(result.Launched, result.Message);
         Reload();
+    }
+
+    /// <summary>Keys typed while a child agent ran (still buffered when it exits) must not drive the next action.</summary>
+    private void DiscardTypedAhead()
+    {
+        try { keys.DiscardPending(); } catch (Exception) { /* nothing readable to drop */ }
     }
 
     private void EditLabel()
@@ -275,6 +287,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
     /// </summary>
     private string? ReadLine(string prompt, string initial)
     {
+        if (!Interactive) return null;
         try { keys.DiscardPending(); } catch (Exception) { return null; }
         var text = new System.Text.StringBuilder(LabelStore.Sanitize(initial) ?? "");
         console.Markup(Esc(prompt) + " ");
@@ -333,7 +346,8 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         if (services.Settings.PolishEnabled)
             polish = ConfirmKey("Polish the handoff with the configured model? [y/N]") == ConfirmResult.Yes;
 
-        var r = services.Transfer.Transfer(source, cur.Info, target, polish, FolderPrompt(console));
+        var r = services.Transfer.Transfer(source, cur.Info, target, polish, FolderPrompt(console, services.ConsoleEnvironment));
+        DiscardTypedAhead();
         if (r.HandoffPath.Length > 0) _status.Add($"Handoff: {Esc(r.HandoffPath)}");
         if (r.BackupPath is not null) _status.Add($"Previous handoff backed up to: {Esc(r.BackupPath)}");
         if (r.Note is not null) _status.Add(r.Launched ? $"[yellow]{Esc(r.Note)}[/]" : $"[red]{Esc(r.Note)}[/]");
@@ -417,6 +431,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
     /// </summary>
     private ConfirmResult ConfirmKey(string question)
     {
+        if (!Interactive) return ConfirmResult.Refused;
         try { keys.DiscardPending(); } catch (Exception) { return ConfirmResult.Refused; }
         console.MarkupLine(Markup.Escape(question));
         try

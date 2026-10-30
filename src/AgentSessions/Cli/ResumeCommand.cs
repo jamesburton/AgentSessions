@@ -19,7 +19,7 @@ public sealed class ResumeCommand(AppServices services, IAnsiConsole console) : 
     public override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
         if (Find(services, console, s.Agent, s.Id) is not var (adapter, session)) return Error;
-        var result = services.Launcher.Resume(adapter, session, FolderPrompt(console));
+        var result = services.Launcher.Resume(adapter, session, FolderPrompt(console, services.ConsoleEnvironment));
         if (result.Message is not null)
             console.MarkupLine(result.Launched ? $"[yellow]{Esc(result.Message)}[/]" : $"[red]{Esc(result.Message)}[/]");
         return result.Launched ? Ok : Error;

@@ -49,15 +49,20 @@ internal static class CliSupport
         foreach (var w in services.SettingsWarnings.Distinct()) console.MarkupLine($"[dim]{Esc(w)}[/]");
     }
 
-    public static bool IsInteractive(IAnsiConsole console) => console.Profile.Capabilities.Interactive;
+    /// <summary>
+    /// Interactive only if the console library says so AND the real console is not redirected (belt and braces: a
+    /// pipe must never be able to drive the TUI or answer a prompt, whatever the library detects).
+    /// </summary>
+    public static bool IsInteractive(IAnsiConsole console, IConsoleEnvironment env) =>
+        console.Profile.Capabilities.Interactive && !env.InputRedirected && !env.OutputRedirected;
 
     /// <summary>
     /// Yes/No is the user's answer at a real prompt (default No). Refused means no answer could be asked or read
-    /// (non-interactive input, or the prompt failed): the caller must treat that as an error, not a choice.
+    /// (non-interactive or redirected console, or the prompt failed): the caller must treat that as an error, not a choice.
     /// </summary>
-    public static ConfirmResult Confirm(IAnsiConsole console, string question)
+    public static ConfirmResult Confirm(IAnsiConsole console, IConsoleEnvironment env, string question)
     {
-        if (!IsInteractive(console)) return ConfirmResult.Refused;
+        if (!IsInteractive(console, env)) return ConfirmResult.Refused;
         try
         {
             var answer = console.Prompt(new TextPrompt<string>(Markup.Escape(question) + " ").AllowEmpty()).Trim();
@@ -71,9 +76,9 @@ internal static class CliSupport
     }
 
     /// <summary>Folder prompt for resume/transfer; only asks when interactive, otherwise returns null (refuse).</summary>
-    public static Func<string?> FolderPrompt(IAnsiConsole console) => () =>
+    public static Func<string?> FolderPrompt(IAnsiConsole console, IConsoleEnvironment env) => () =>
     {
-        if (!IsInteractive(console)) return null;
+        if (!IsInteractive(console, env)) return null;
         try
         {
             var answer = console.Prompt(new TextPrompt<string>("Project folder for this session:").AllowEmpty());

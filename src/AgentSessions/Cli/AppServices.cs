@@ -16,6 +16,13 @@ public sealed class AppServices
     /// dim, by list and clean.
     /// </summary>
     public IReadOnlyList<string> SettingsWarnings { get; init; } = [];
+
+    /// <summary>
+    /// The real console's redirection state, checked (with the console library's own view) before the TUI or any prompt.
+    /// <see cref="CreateDefault"/> uses the process console; a directly constructed instance (tests) defaults to
+    /// "not redirected" because the test host's stdio is itself redirected.
+    /// </summary>
+    public IConsoleEnvironment ConsoleEnvironment { get; init; } = new FixedConsoleEnvironment();
     public IReadOnlyDictionary<string, ISessionAdapter> Adapters { get; }
     public Func<DateTimeOffset> Now { get; }
     public SessionCatalog Catalog { get; }
@@ -55,7 +62,8 @@ public sealed class AppServices
             () => DateTimeOffset.UtcNow, settings.ArchiveRoot ?? Path.Combine(dataDir, "archive"),
             new LabelStore(Path.Combine(dataDir, "labels.json")))
         {
-            SettingsWarnings = store.Warnings.ToList()
+            SettingsWarnings = store.Warnings.ToList(),
+            ConsoleEnvironment = SystemConsoleEnvironment.Instance,
         };
     }
 }

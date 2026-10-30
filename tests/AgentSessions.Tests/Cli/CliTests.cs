@@ -41,13 +41,16 @@ public class CliTests : IDisposable
     }
 
     private (AppServices Svc, TestConsole Console) Make(IEnumerable<ISessionAdapter> adapters, AppSettings? settings = null,
-        IModelCaller? caller = null, bool interactive = false)
+        IModelCaller? caller = null, bool interactive = false, IConsoleEnvironment? env = null)
     {
         Directory.CreateDirectory(Project);
         var console = new TestConsole().Width(300);
         if (interactive) console.Interactive();
         var svc = new AppServices(adapters, settings ?? new AppSettings(), _runner, _clipboard, () => Now,
-            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), caller, _root);
+            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), caller, _root)
+        {
+            ConsoleEnvironment = env ?? new FixedConsoleEnvironment()   // the test host's real stdio IS redirected
+        };
         return (svc, console);
     }
 
@@ -511,6 +514,57 @@ public class CliTests : IDisposable
         Assert.Contains("Unknown agent 'bogus'", console.Output);
         Assert.Contains("claude, codex", console.Output);
         Assert.DoesNotContain("session(s).", console.Output);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void clean_apply_cannot_be_confirmed_through_a_redirected_console(bool input, bool output)
+    {
+        // `echo y | agentsessions clean --delete --apply` must never confirm, whatever the console library reports.
+        var s = Session("claude", "c1", "Old", 90);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], interactive: true, env: new FixedConsoleEnvironment(input, output));
+        console.Input.PushTextWithEnter("y");
+
+        var code = Program.Run(["clean", "--delete", "--apply"], console, svc);
+
+        Assert.Equal(1, code);
+        Assert.Contains("Refused", console.Output);
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Fact]
+    public void folder_prompt_does_not_ask_when_input_is_redirected()
+    {
+        var console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter(_root);
+        Assert.Null(CliSupport.FolderPrompt(console, new FixedConsoleEnvironment(InputRedirected: true))());
+        Assert.Equal(_root, CliSupport.FolderPrompt(console, new FixedConsoleEnvironment())());
+    }
+
+    [Fact]
+    public void no_arguments_with_redirected_output_prints_help_instead_of_the_TUI()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [])], interactive: true, env: new FixedConsoleEnvironment(OutputRedirected: true));
+
+        var code = Program.Run([], console, svc);
+
+        Assert.Equal(0, code);
+        Assert.Contains("clean", console.Output);
+        Assert.DoesNotContain("session(s),", console.Output);   // the TUI's status line
+    }
+
+    [Fact]
+    public void parse_errors_strip_control_characters_from_the_echoed_argument()
+    {
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
+
+        var code = Program.Run(["bogus\u001b]0;pwn\u0007\u001b[31m"], console, svc);
+
+        Assert.Equal(2, code);
+        Assert.False(console.Output.Contains('\u001b'));
+        Assert.False(console.Output.Contains('\u0007'));
+        Assert.Contains("bogus", console.Output);
     }
 
     [Fact]

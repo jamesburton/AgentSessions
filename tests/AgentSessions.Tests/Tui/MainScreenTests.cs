@@ -83,13 +83,16 @@ public class MainScreenTests : IDisposable
         | AdapterCapabilities.LaunchWithPrompt | AdapterCapabilities.Transcript | AdapterCapabilities.Archive | AdapterCapabilities.Delete;
 
     private (AppServices Svc, TestConsole Console) Make(IEnumerable<ISessionAdapter> adapters, bool interactive = true,
-        AppSettings? settings = null, int width = 200)
+        AppSettings? settings = null, int width = 200, IConsoleEnvironment? env = null)
     {
         Directory.CreateDirectory(Project);
         var console = new TestConsole().Width(width);
         if (interactive) console.Interactive();
         var svc = new AppServices(adapters, settings ?? new AppSettings(), _runner, new FakeClipboard(), () => Now,
-            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), null, _root);
+            Path.Combine(_root, "archive"), new LabelStore(Path.Combine(_root, "data", "labels.json")), null, _root)
+        {
+            ConsoleEnvironment = env ?? new FixedConsoleEnvironment()   // the test host's real stdio IS redirected
+        };
         return (svc, console);
     }
 
@@ -477,8 +480,51 @@ public class MainScreenTests : IDisposable
     {
         var (svc, console) = Make([new FakeAdapter("claude", Full, [])]);
         Assert.Equal(0, RunScreen(svc, console, C('q')));
-        var (svc2, console2) = Make([new FakeAdapter("claude", Full, [])]);
-        Assert.Equal(0, RunScreen(svc2, console2, Key(ConsoleKey.Escape)));
+    }
+
+    [Fact]
+    public void Escape_does_not_quit_the_main_screen_only_q_does()
+    {
+        // A child agent can leave VT input mode on, so an arrow key arrives as ESC [ A: a bare Escape must not quit.
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [Session("claude", "c1", "Work", 1)])]);
+
+        var code = RunScreen(svc, console, Key(ConsoleKey.Escape), Key(ConsoleKey.Escape), C('q'));
+
+        Assert.Equal(0, code);
+        Assert.Equal(3, _keys.Frames.Count);   // both Escapes were read and ignored; q quit
+        Assert.Contains("[q] quit", _keys.Frames[2]);
+        Assert.DoesNotContain("Esc", _keys.Frames[2]);
+    }
+
+    [Fact]
+    public void Keys_buffered_while_a_resumed_agent_ran_are_discarded()
+    {
+        var s = Session("claude", "c1", "Work", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])]);
+
+        // 'd' was typed while the agent ran (still buffered when it exits): it must not start a delete.
+        var code = RunScreen(svc, console, Enter, Ahead(C('d')), C('q'));
+
+        Assert.Equal(0, code);
+        Assert.Single(_runner.Runs);
+        Assert.DoesNotContain("Plan:", console.Output);
+        Assert.True(File.Exists(s.StorePath));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Redirected_console_refuses_the_TUI_even_if_the_library_says_interactive(bool input, bool output)
+    {
+        var s = Session("claude", "c1", "Work", 1);
+        var (svc, console) = Make([new FakeAdapter("claude", Full, [s])], env: new FixedConsoleEnvironment(input, output));
+
+        var code = RunScreen(svc, console, C('d'), C('y'), C('q'));
+
+        Assert.Equal(1, code);
+        Assert.Contains("needs a terminal", console.Output);
+        Assert.Empty(_keys.Frames);
+        Assert.True(File.Exists(s.StorePath));
     }
 
     [Fact]

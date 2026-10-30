@@ -40,7 +40,7 @@ public sealed class TransferCommand(AppServices services, IAnsiConsole console) 
             return Error;
         }
 
-        var r = services.Transfer.Transfer(source, session, target, s.Polish, FolderPrompt(console));
+        var r = services.Transfer.Transfer(source, session, target, s.Polish, FolderPrompt(console, services.ConsoleEnvironment));
         if (r.HandoffPath.Length > 0) console.MarkupLine($"Handoff: {Esc(r.HandoffPath)}");
         if (r.BackupPath is not null) console.MarkupLine($"Previous handoff backed up to: {Esc(r.BackupPath)}");
         if (s.Polish && !services.Settings.PolishEnabled)

@@ -89,7 +89,7 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
             var question = $"About to {what} {actionable.Count} session(s)"
                 + (warned > 0 ? $", {warned} with active-session warnings" : "")
                 + ". Proceed? [y/N]";
-            switch (Confirm(console, question))
+            switch (Confirm(console, services.ConsoleEnvironment, question))
             {
                 case ConfirmResult.Refused:
                     console.MarkupLine("[red]Refused: no interactive confirmation is possible here, so nothing was changed. Pass --yes to proceed without a prompt.[/]");
