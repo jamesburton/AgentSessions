@@ -388,6 +388,7 @@ public sealed class MainScreen(IAnsiConsole console, AppServices services, IKeyS
         var what = action == CleanupAction.Delete ? "PERMANENTLY delete" : "archive";
         var warned = actionable.Count(p => p.Warning is not null);
         var question = $"About to {what} {actionable.Count} session(s)"
+            + (action == CleanupAction.Delete ? " (their session files only; prompt history and agent backups may remain)" : "")
             + (warned > 0 ? $", {warned} with active-session warnings" : "") + ". Proceed? [y/N] (y confirms; any other key cancels)";
 
         // The only route to Apply: an explicit "y" pressed after the plan was shown. Anything else is No.

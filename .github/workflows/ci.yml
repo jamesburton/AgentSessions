@@ -1,0 +1,32 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet build -c Release -warnaserror
+      - run: dotnet test -c Release --no-build
+      - name: Pack
+        run: dotnet pack src/AgentSessions -c Release --no-build -o out
+      - name: Smoke test via dnx
+        shell: bash
+        run: dnx AgentSessions --source ./out --yes -- --version
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: package
+          path: out/*.nupkg

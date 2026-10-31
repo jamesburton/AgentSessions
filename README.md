@@ -102,7 +102,8 @@ Selects stale sessions (older than `staleDays`, or `--older-than`), or the exact
 `--older-than` cannot be combined. Default is to print the plan and change nothing.
 
 - `--archive` (the default action) moves the sessions to the archive.
-- `--delete` removes them permanently. It is never the default and does nothing without `--apply`.
+- `--delete` permanently removes the sessions' own files. Copies elsewhere (prompt history, Claude's file-history
+  backups, Codex's thread history) are left. It is never the default and does nothing without `--apply`.
 - `--apply` actually performs the plan. Unless `--yes` is given you are asked to confirm (default No). With no
   interactive terminal (including any piped or redirected stdin or stdout, so `echo y | agentsessions clean ...`
   cannot confirm) and no `--yes`, it refuses and exits 1.
@@ -166,6 +167,8 @@ only `manifest.json` records where each item came from.
   originals fails part way, the missing originals are copied back (never overwriting) and verified; if even that fails,
   the archive copy and `manifest.json` are kept and the error says so explicitly (nothing is deleted from the archive).
 - `restore` never overwrites: if anything already exists at an original path, it stops and changes nothing.
+- The handoff copies recent shell commands verbatim. If you typed a secret inline in a command, it will appear in
+  `.docs/handoff.md`; review the file before committing it.
 - A transfer never overwrites `.docs/handoff.md`. An existing file is first copied to
   `.docs/handoff.<yyyy-MM-ddTHHmm>.md` (UTC; `-2`, `-3` on collision), the copy is verified byte for byte, and the
   new handoff links to it in its header. A read-only or locked existing handoff stops the transfer.

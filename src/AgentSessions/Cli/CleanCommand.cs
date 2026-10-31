@@ -87,6 +87,7 @@ public sealed class CleanCommand(AppServices services, IAnsiConsole console) : C
             var warned = actionable.Count(p => p.Warning is not null);
             var what = action == CleanupAction.Delete ? "PERMANENTLY delete" : "archive";
             var question = $"About to {what} {actionable.Count} session(s)"
+                + (action == CleanupAction.Delete ? " (their session files only; prompt history and agent backups may remain)" : "")
                 + (warned > 0 ? $", {warned} with active-session warnings" : "")
                 + ". Proceed? [y/N]";
             switch (Confirm(console, services.ConsoleEnvironment, question))
