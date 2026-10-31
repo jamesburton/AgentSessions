@@ -20,7 +20,7 @@ jobs:
       - run: dotnet pack src/AgentSessions -c Release --no-build -p:Version=$env:VERSION -o out
       - name: Smoke test via dnx
         shell: bash
-        run: dnx AgentSessions --version "$VERSION" --source ./out --yes -- --version
+        run: dotnet dnx AgentSessions --version "$VERSION" --source ./out --yes -- --version
       - uses: actions/upload-artifact@v4
         with:
           name: package

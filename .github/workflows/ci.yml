@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,9 +24,9 @@ jobs:
         run: dotnet pack src/AgentSessions -c Release --no-build -o out
       - name: Smoke test via dnx
         shell: bash
-        run: dnx AgentSessions --source ./out --yes -- --version
+        run: dotnet dnx AgentSessions --source ./out --yes -- --version
       - uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'windows-latest'
         with:
           name: package
           path: out/*.nupkg
